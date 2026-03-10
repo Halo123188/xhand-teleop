@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 import mujoco
+import mujoco.viewer
 import numpy as np
 from scipy.spatial.transform import Rotation
 
