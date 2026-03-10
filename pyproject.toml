@@ -1,0 +1,12 @@
+[project]
+name = "xhand-teleop"
+version = "0.1.0"
+description = "XHAND teleoperation via Apple Vision Pro + MuJoCo + EtherCAT"
+requires-python = ">=3.10"
+dependencies = [
+    "mujoco>=3.5",
+    "numpy",
+    "scipy",
+    "vuer>=0.1.5",
+    "params-proto>=3.0",
+]
