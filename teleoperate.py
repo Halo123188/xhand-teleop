@@ -122,7 +122,7 @@ def update_mocap_bodies(mj_model, mj_data, poses_flat):
         mj_data.mocap_quat[mocap_id] = quat
 
 
-async def run(args):
+def run(args):
     # -- MuJoCo --
     logger.info("Loading MuJoCo model: %s", args.mjcf)
     mj_model = mujoco.MjModel.from_xml_path(args.mjcf)
@@ -264,7 +264,7 @@ def main(
         print(f"ERROR: MJCF not found: {args.mjcf}")
         sys.exit(1)
 
-    asyncio.run(run(args))
+    run(args)
 
 
 if __name__ == "__main__":
