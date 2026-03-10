@@ -176,20 +176,29 @@ def run(args):
                 if not args.dry_run:
                     return
 
-            # Launch MuJoCo viewer
-            with mujoco.viewer.launch_passive(
-                model=mj_model, data=mj_data,
-                show_left_ui=False, show_right_ui=False,
-            ) as viewer:
+            # Try to launch MuJoCo viewer (optional — requires mjpython on macOS)
+            viewer = None
+            try:
+                viewer = mujoco.viewer.launch_passive(
+                    model=mj_model, data=mj_data,
+                    show_left_ui=False, show_right_ui=False,
+                )
                 mujoco.mjv_defaultFreeCamera(mj_model, viewer.cam)
                 viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+                logger.info("MuJoCo viewer launched")
+            except Exception as e:
+                logger.warning("MuJoCo viewer unavailable (%s), running headless", e)
 
-                dt = 1.0 / args.control_rate
-                frame_count = 0
+            dt = 1.0 / args.control_rate
+            frame_count = 0
 
-                logger.info("Teleoperation running at %.0f Hz. Ctrl+C to stop.", args.control_rate)
+            logger.info("Teleoperation running at %.0f Hz. Ctrl+C to stop.", args.control_rate)
 
-                while viewer.is_running():
+            try:
+                while True:
+                    if viewer is not None and not viewer.is_running():
+                        break
+
                     # 1. Update mocap bodies from latest VR hand data
                     poses = latest_hand_poses["right"]
                     if poses is not None:
@@ -201,8 +210,9 @@ def run(args):
                     # 3. Extract qpos and send to XHAND
                     await bridge.send_qpos(mj_data.qpos)
 
-                    # 4. Sync viewer
-                    viewer.sync()
+                    # 4. Sync viewer if available
+                    if viewer is not None:
+                        viewer.sync()
 
                     # 5. Log stats periodically
                     frame_count += 1
@@ -214,9 +224,10 @@ def run(args):
                         )
 
                     await asyncio.sleep(dt)
-
-                # Cleanup
-                logger.info("Viewer closed, shutting down...")
+            finally:
+                logger.info("Shutting down...")
+                if viewer is not None:
+                    viewer.close()
                 await bridge.close()
         except Exception as e:
             logger.exception("main_loop crashed: %s", e)
