@@ -141,6 +141,7 @@ def run(args):
     bridge = XHandBridge(bridge_config, mj_model)
 
     # -- Vuer --
+    Vuer.cors = "*"
     app = Vuer(host=args.host, port=args.port, static_root=str(_HERE))
     if args.cert:
         app.cert = os.path.expanduser(args.cert)
@@ -162,59 +163,63 @@ def run(args):
 
     @app.spawn(start=True)
     async def main_loop(session: VuerSession):
-        # Enable hand tracking
-        session.upsert @ Hands(stream=True, scale=1, key="hands")
-
-        # Start bridge
         try:
-            await bridge.start()
+            # Enable hand tracking
+            session.upsert @ Hands(stream=True, scale=1, key="hands")
+
+            # Start bridge
+            try:
+                await bridge.start()
+            except Exception as e:
+                logger.error("Failed to start XHAND bridge: %s", e)
+                if not args.dry_run:
+                    return
+
+            # Launch MuJoCo viewer
+            with mujoco.viewer.launch_passive(
+                model=mj_model, data=mj_data,
+                show_left_ui=False, show_right_ui=False,
+            ) as viewer:
+                mujoco.mjv_defaultFreeCamera(mj_model, viewer.cam)
+                viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+
+                dt = 1.0 / args.control_rate
+                frame_count = 0
+
+                logger.info("Teleoperation running at %.0f Hz. Ctrl+C to stop.", args.control_rate)
+
+                while viewer.is_running():
+                    # 1. Update mocap bodies from latest VR hand data
+                    poses = latest_hand_poses["right"]
+                    if poses is not None:
+                        update_mocap_bodies(mj_model, mj_data, poses)
+
+                    # 2. Step MuJoCo (weld constraints solve IK)
+                    mujoco.mj_step(mj_model, mj_data)
+
+                    # 3. Extract qpos and send to XHAND
+                    await bridge.send_qpos(mj_data.qpos)
+
+                    # 4. Sync viewer
+                    viewer.sync()
+
+                    # 5. Log stats periodically
+                    frame_count += 1
+                    if frame_count % 500 == 0:
+                        stats = bridge.stats
+                        logger.info(
+                            "Frame %d | bridge: sent=%d dropped=%d errors=%d",
+                            frame_count, stats["sent"], stats["dropped"], stats["errors"],
+                        )
+
+                    await asyncio.sleep(dt)
+
+                # Cleanup
+                logger.info("Viewer closed, shutting down...")
+                await bridge.close()
         except Exception as e:
-            logger.error("Failed to start XHAND bridge: %s", e)
-            if not args.dry_run:
-                return
-
-        # Launch MuJoCo viewer
-        with mujoco.viewer.launch_passive(
-            model=mj_model, data=mj_data,
-            show_left_ui=False, show_right_ui=False,
-        ) as viewer:
-            mujoco.mjv_defaultFreeCamera(mj_model, viewer.cam)
-            viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-
-            dt = 1.0 / args.control_rate
-            frame_count = 0
-
-            logger.info("Teleoperation running at %.0f Hz. Ctrl+C to stop.", args.control_rate)
-
-            while viewer.is_running():
-                # 1. Update mocap bodies from latest VR hand data
-                poses = latest_hand_poses["right"]
-                if poses is not None:
-                    update_mocap_bodies(mj_model, mj_data, poses)
-
-                # 2. Step MuJoCo (weld constraints solve IK)
-                mujoco.mj_step(mj_model, mj_data)
-
-                # 3. Extract qpos and send to XHAND
-                await bridge.send_qpos(mj_data.qpos)
-
-                # 4. Sync viewer
-                viewer.sync()
-
-                # 5. Log stats periodically
-                frame_count += 1
-                if frame_count % 500 == 0:
-                    stats = bridge.stats
-                    logger.info(
-                        "Frame %d | bridge: sent=%d dropped=%d errors=%d",
-                        frame_count, stats["sent"], stats["dropped"], stats["errors"],
-                    )
-
-                await asyncio.sleep(dt)
-
-            # Cleanup
-            logger.info("Viewer closed, shutting down...")
-            await bridge.close()
+            logger.exception("main_loop crashed: %s", e)
+            raise
 
 
 @proto.cli
