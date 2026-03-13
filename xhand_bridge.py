@@ -25,16 +25,18 @@ logger = logging.getLogger(__name__)
 # Try to import the XHAND SDK
 XHAND_AVAILABLE = False
 XHAND_IMPORT_ERROR = None
+XHandControl = None
+HandCommand_t = None
 try:
-    import xhand_controller as xhand
-    from xhand_controller import HandCommand_t
+    from xhand_controller.xhand_control import XHandControl, HandCommand_t
     XHAND_AVAILABLE = True
 except ImportError:
     try:
-        import xhand_control as xhand
-        from xhand_control import HandCommand_t
+        import xhand_control
+        XHandControl = xhand_control.XHandControl
+        HandCommand_t = xhand_control.HandCommand_t
         XHAND_AVAILABLE = True
-    except ImportError as e:
+    except (ImportError, AttributeError) as e:
         XHAND_IMPORT_ERROR = str(e)
 
 
@@ -169,6 +171,7 @@ class XHandBridge:
         self._config = config
         self._mapper = JointMapper(mj_model) if mj_model is not None else None
         self._smoother = JointSmoother(NUM_XHAND_JOINTS, config.smoothing_window)
+        self._device: Optional[object] = None  # XHandControl instance
         self._device_id: Optional[int] = None
         self._connected = False
         self._stopped = False
@@ -208,9 +211,12 @@ class XHandBridge:
     def _connect_sync(self):
         iface = self._config.ethercat_interface
         logger.info("Opening EtherCAT on '%s'...", iface)
-        xhand.open_ethercat(iface)
+        self._device = XHandControl()
+        rsp = self._device.open_ethercat(iface)
+        if rsp.error_code != 0:
+            raise RuntimeError(f"Failed to open EtherCAT: {rsp.error_message}")
 
-        hand_ids = xhand.list_hands_id()
+        hand_ids = self._device.list_hands_id()
         if not hand_ids:
             raise RuntimeError("No XHAND devices found!")
         self._device_id = hand_ids[0]
@@ -232,7 +238,7 @@ class XHandBridge:
             loop = asyncio.get_event_loop()
             try:
                 await loop.run_in_executor(self._executor, self._zero_torque_sync)
-                await loop.run_in_executor(self._executor, xhand.close_device)
+                await loop.run_in_executor(self._executor, self._device.close_device)
             except Exception as e:
                 logger.error("Error during XHAND close: %s", e)
 
@@ -301,31 +307,30 @@ class XHandBridge:
                 logger.info("[HW-DRY] would send: %s",
                             np.array2string(positions, precision=4, suppress_small=True))
             return
-        # Convert radians to degrees — XHAND SDK expects degrees
-        positions_deg = np.degrees(positions)
+        # XHAND SDK expects radians (positions are already in radians from MuJoCo)
         cmd = HandCommand_t()
         for i in range(NUM_XHAND_JOINTS):
             cmd.finger_command[i].id = i
-            cmd.finger_command[i].position = float(positions_deg[i])
-            cmd.finger_command[i].kp = self._config.kp
-            cmd.finger_command[i].tor_max = self._config.tor_max
+            cmd.finger_command[i].position = float(positions[i])
+            cmd.finger_command[i].kp = int(self._config.kp)
+            cmd.finger_command[i].tor_max = int(self._config.tor_max)
             cmd.finger_command[i].mode = 3  # PD position control
         if self._stats["sent"] % 200 == 0:
-            logger.info("[HW] sending to device %d: positions_deg=%s kp=%.1f tor_max=%.1f mode=3",
+            logger.info("[HW] sending to device %d: positions_rad=%s kp=%d tor_max=%d mode=3",
                         self._device_id,
-                        np.array2string(positions_deg, precision=2, suppress_small=True),
-                        self._config.kp, self._config.tor_max)
-        result = xhand.send_command(self._device_id, cmd)
+                        np.array2string(positions, precision=4, suppress_small=True),
+                        int(self._config.kp), int(self._config.tor_max))
+        result = self._device.send_command(self._device_id, cmd)
         if self._stats["sent"] % 200 == 0:
-            logger.info("[HW] send_command returned: %s", result)
+            logger.info("[HW] send_command returned: error_code=%s", result.error_code)
 
     def _zero_torque_sync(self):
         cmd = HandCommand_t()
         for i in range(NUM_XHAND_JOINTS):
             cmd.finger_command[i].id = i
             cmd.finger_command[i].position = 0.0
-            cmd.finger_command[i].kp = 0.0
-            cmd.finger_command[i].tor_max = 0.0
+            cmd.finger_command[i].kp = 0
+            cmd.finger_command[i].tor_max = 0
             cmd.finger_command[i].mode = 0
-        xhand.send_command(self._device_id, cmd)
+        self._device.send_command(self._device_id, cmd)
         logger.warning("Zero torque sent to device %d", self._device_id)
