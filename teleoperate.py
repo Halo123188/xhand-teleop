@@ -71,6 +71,15 @@ TRACKED_LANDMARKS = {
     "pinky-finger-tip": "right-pinky-finger-tip",
 }
 
+# Fingertip landmarks -> XHAND site names (for computing robot finger lengths)
+FINGERTIP_SITES = {
+    "thumb-tip": "xhand_right_thumb_tip_site",
+    "index-finger-tip": "xhand_right_index_finger_tip_site",
+    "middle-finger-tip": "xhand_right_middle_finger_tip_site",
+    "ring-finger-tip": "xhand_right_ring_finger_tip_site",
+    "pinky-finger-tip": "xhand_right_pinky_finger_tip_site",
+}
+
 # Vuer (three.js, Y-up) -> MuJoCo (Z-up) rotation
 _R_VUER_TO_MUJOCO = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=np.float64)
 
@@ -95,14 +104,43 @@ def vuer_to_mujoco(mat4x4):
     return T @ mat4x4
 
 
-def update_mocap_bodies(mj_model, mj_data, poses_flat):
+def compute_xhand_finger_lengths(mj_model, mj_data):
+    """Compute XHAND wrist-to-fingertip distances from the model's default pose.
+
+    Returns:
+        dict mapping landmark name -> distance (meters).
+    """
+    # Use site positions from current (default) pose
+    wrist_site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, "xhand_right_wrist_site")
+    wrist_pos = mj_data.site_xpos[wrist_site_id].copy()
+
+    lengths = {}
+    for landmark_name, site_name in FINGERTIP_SITES.items():
+        site_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_SITE, site_name)
+        if site_id < 0:
+            continue
+        tip_pos = mj_data.site_xpos[site_id]
+        lengths[landmark_name] = np.linalg.norm(tip_pos - wrist_pos)
+
+    return lengths
+
+
+def update_mocap_bodies(mj_model, mj_data, poses_flat, xhand_finger_lengths):
     """Update MuJoCo mocap bodies from Vuer hand landmark data.
+
+    Fingertip positions are auto-scaled so that any human hand maps to
+    full XHAND range of motion.
 
     Args:
         mj_model: MuJoCo model.
         mj_data: MuJoCo data.
         poses_flat: Flat array of 400 floats from Vuer HAND_MOVE event.
+        xhand_finger_lengths: dict from compute_xhand_finger_lengths().
     """
+    # Get wrist position in MuJoCo coords (used as reference for scaling)
+    wrist_mat_mj = vuer_to_mujoco(extract_landmark_se3(poses_flat, "wrist"))
+    wrist_pos_mj = wrist_mat_mj[:3, 3]
+
     for landmark_name, mocap_body_name in TRACKED_LANDMARKS.items():
         body_id = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, mocap_body_name)
         if body_id < 0:
@@ -114,9 +152,19 @@ def update_mocap_bodies(mj_model, mj_data, poses_flat):
         # Extract SE3 from Vuer data and convert to MuJoCo coords
         mat_vuer = extract_landmark_se3(poses_flat, landmark_name)
         mat_mj = vuer_to_mujoco(mat_vuer)
+        pos = mat_mj[:3, 3]
+
+        # Scale fingertip positions relative to wrist
+        if landmark_name != "wrist" and landmark_name in xhand_finger_lengths:
+            offset = pos - wrist_pos_mj
+            human_dist = np.linalg.norm(offset)
+            if human_dist > 1e-4:  # avoid division by zero
+                xhand_dist = xhand_finger_lengths[landmark_name]
+                scale = xhand_dist / human_dist
+                pos = wrist_pos_mj + offset * scale
 
         # Set position
-        mj_data.mocap_pos[mocap_id] = mat_mj[:3, 3]
+        mj_data.mocap_pos[mocap_id] = pos
 
         # Set quaternion (scipy gives [x,y,z,w] but MuJoCo wants [w,x,y,z])
         quat = Rotation.from_matrix(mat_mj[:3, :3]).as_quat(scalar_first=True)
@@ -129,6 +177,11 @@ def run(args):
     mj_model = mujoco.MjModel.from_xml_path(args.mjcf)
     mj_data = mujoco.MjData(mj_model)
     mujoco.mj_forward(mj_model, mj_data)
+
+    # Compute XHAND finger lengths from default pose (for auto-scaling)
+    xhand_finger_lengths = compute_xhand_finger_lengths(mj_model, mj_data)
+    logger.info("XHAND finger lengths (m): %s",
+                {k: f"{v:.4f}" for k, v in xhand_finger_lengths.items()})
 
     # -- XHAND bridge --
     bridge_config = XHandBridgeConfig(
@@ -202,7 +255,7 @@ def run(args):
                     # 1. Update mocap bodies from latest VR hand data
                     poses = latest_hand_poses["right"]
                     if poses is not None:
-                        update_mocap_bodies(mj_model, mj_data, poses)
+                        update_mocap_bodies(mj_model, mj_data, poses, xhand_finger_lengths)
 
                     # 2. Step MuJoCo (weld constraints solve IK)
                     mujoco.mj_step(mj_model, mj_data)
