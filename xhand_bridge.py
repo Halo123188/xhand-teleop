@@ -26,11 +26,16 @@ logger = logging.getLogger(__name__)
 XHAND_AVAILABLE = False
 XHAND_IMPORT_ERROR = None
 try:
-    import xhand_control as xhand
-    from xhand_control import HandCommand_t
+    import xhand_controller as xhand
+    from xhand_controller import HandCommand_t
     XHAND_AVAILABLE = True
-except ImportError as e:
-    XHAND_IMPORT_ERROR = str(e)
+except ImportError:
+    try:
+        import xhand_control as xhand
+        from xhand_control import HandCommand_t
+        XHAND_AVAILABLE = True
+    except ImportError as e:
+        XHAND_IMPORT_ERROR = str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -95,7 +100,12 @@ class JointMapper:
         logger.info("JointMapper: %d joints resolved", len(self._qpos_addrs))
 
     def map(self, qpos: np.ndarray) -> np.ndarray:
-        return np.array([qpos[addr] for addr in self._qpos_addrs], dtype=np.float64)
+        raw = np.array([qpos[addr] for addr in self._qpos_addrs], dtype=np.float64)
+        # MuJoCo's weld-constraint IK can push joint2 values negative
+        # (distal phalanx bending backward). Take abs so hardware gets
+        # the correct curl magnitude.
+        raw = np.abs(raw)
+        return raw
 
 
 # ---------------------------------------------------------------------------
@@ -291,17 +301,19 @@ class XHandBridge:
                 logger.info("[HW-DRY] would send: %s",
                             np.array2string(positions, precision=4, suppress_small=True))
             return
+        # Convert radians to degrees — XHAND SDK expects degrees
+        positions_deg = np.degrees(positions)
         cmd = HandCommand_t()
         for i in range(NUM_XHAND_JOINTS):
             cmd.finger_command[i].id = i
-            cmd.finger_command[i].position = float(positions[i])
+            cmd.finger_command[i].position = float(positions_deg[i])
             cmd.finger_command[i].kp = self._config.kp
             cmd.finger_command[i].tor_max = self._config.tor_max
             cmd.finger_command[i].mode = 3  # PD position control
         if self._stats["sent"] % 200 == 0:
-            logger.info("[HW] sending to device %d: positions=%s kp=%.1f tor_max=%.1f mode=3",
+            logger.info("[HW] sending to device %d: positions_deg=%s kp=%.1f tor_max=%.1f mode=3",
                         self._device_id,
-                        np.array2string(positions, precision=4, suppress_small=True),
+                        np.array2string(positions_deg, precision=2, suppress_small=True),
                         self._config.kp, self._config.tor_max)
         result = xhand.send_command(self._device_id, cmd)
         if self._stats["sent"] % 200 == 0:
