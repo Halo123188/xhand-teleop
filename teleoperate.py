@@ -37,6 +37,7 @@ from xhand_bridge import (
     XHAND_IMPORT_ERROR,
     XHandBridge,
     XHandBridgeConfig,
+    clamp_to_limits,
 )
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,8 @@ def run(args):
     # Shared state: latest hand poses from VR
     latest_hand_poses = {"right": None}
 
+    hand_frame_count = {"n": 0}
+
     @app.add_handler("HAND_MOVE")
     async def on_hand_move(event: ClientEvent, session: VuerSession):
         """Store latest VR hand data (processed in main loop)."""
@@ -228,6 +231,10 @@ def run(args):
         right = hand_data.get("right")
         if right and len(right) >= 400:
             latest_hand_poses["right"] = right
+            hand_frame_count["n"] += 1
+            if hand_frame_count["n"] % 100 == 1:
+                logger.info("[VR] HAND_MOVE received (frame %d, %d floats)",
+                            hand_frame_count["n"], len(right))
 
     @app.spawn(start=True)
     async def main_loop(session: VuerSession):
@@ -240,8 +247,11 @@ def run(args):
                 await bridge.start()
             except Exception as e:
                 logger.error("Failed to start XHAND bridge: %s", e)
-                if not args.dry_run:
-                    return
+                logger.warning("Continuing without hardware — MuJoCo simulation only")
+                # Force dry_run so bridge.send_qpos doesn't fail
+                bridge._config.dry_run = True
+                bridge._connected = True
+                bridge._send_task = asyncio.create_task(bridge._sender_loop())
 
             # Try to launch MuJoCo viewer (optional — requires mjpython on macOS)
             viewer = None
@@ -298,11 +308,35 @@ def run(args):
 
                     # 5. Log stats periodically
                     frame_count += 1
-                    if frame_count % 500 == 0:
+                    if frame_count % 200 == 0:
                         stats = bridge.stats
+                        # Log mocap positions
+                        for lname, bname in TRACKED_LANDMARKS.items():
+                            bid = mujoco.mj_name2id(mj_model, mujoco.mjtObj.mjOBJ_BODY, bname)
+                            if bid >= 0:
+                                mid = mj_model.body_mocapid[bid]
+                                if mid >= 0:
+                                    p = mj_data.mocap_pos[mid]
+                                    logger.info("[MOCAP] %s: pos=[%.4f, %.4f, %.4f]",
+                                                lname, p[0], p[1], p[2])
+
+                        # Log all 12 XHAND joint qpos
+                        if bridge._mapper is not None:
+                            raw_joints = bridge._mapper.map(mj_data.qpos)
+                            logger.info("[QPOS] raw 12 joints (rad): %s",
+                                        np.array2string(raw_joints, precision=4, suppress_small=True))
+                            clamped = clamp_to_limits(raw_joints)
+                            logger.info("[QPOS] clamped joints (rad): %s",
+                                        np.array2string(clamped, precision=4, suppress_small=True))
+                            # Check if any joints are changing
+                            logger.info("[QPOS] joint range: min=%.4f max=%.4f sum=%.4f",
+                                        raw_joints.min(), raw_joints.max(), raw_joints.sum())
+
                         logger.info(
-                            "Frame %d | bridge: sent=%d dropped=%d errors=%d",
-                            frame_count, stats["sent"], stats["dropped"], stats["errors"],
+                            "[BRIDGE] Frame %d | VR frames=%d | sent=%d dropped=%d errors=%d | connected=%s",
+                            frame_count, hand_frame_count["n"],
+                            stats["sent"], stats["dropped"], stats["errors"],
+                            bridge.connected,
                         )
 
                     await asyncio.sleep(dt)

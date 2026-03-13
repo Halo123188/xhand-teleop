@@ -242,7 +242,13 @@ class XHandBridge:
         else:
             raw = np.asarray(qpos[:NUM_XHAND_JOINTS], dtype=np.float64)
 
-        clamped = clamp_to_limits(self._smoother.smooth(raw))
+        smoothed = self._smoother.smooth(raw)
+        clamped = clamp_to_limits(smoothed)
+
+        if self._stats["sent"] % 200 == 0:
+            logger.info("[BRIDGE] raw:      %s", np.array2string(raw, precision=4, suppress_small=True))
+            logger.info("[BRIDGE] smoothed: %s", np.array2string(smoothed, precision=4, suppress_small=True))
+            logger.info("[BRIDGE] clamped:  %s", np.array2string(clamped, precision=4, suppress_small=True))
 
         # Drop stale, keep only freshest command
         try:
@@ -281,6 +287,9 @@ class XHandBridge:
 
     def _send_sync(self, positions: np.ndarray):
         if self._config.dry_run:
+            if self._stats["sent"] % 200 == 0:
+                logger.info("[HW-DRY] would send: %s",
+                            np.array2string(positions, precision=4, suppress_small=True))
             return
         cmd = HandCommand_t()
         for i in range(NUM_XHAND_JOINTS):
@@ -289,7 +298,14 @@ class XHandBridge:
             cmd.finger_command[i].kp = self._config.kp
             cmd.finger_command[i].tor_max = self._config.tor_max
             cmd.finger_command[i].mode = 3  # PD position control
-        xhand.send_command(self._device_id, cmd)
+        if self._stats["sent"] % 200 == 0:
+            logger.info("[HW] sending to device %d: positions=%s kp=%.1f tor_max=%.1f mode=3",
+                        self._device_id,
+                        np.array2string(positions, precision=4, suppress_small=True),
+                        self._config.kp, self._config.tor_max)
+        result = xhand.send_command(self._device_id, cmd)
+        if self._stats["sent"] % 200 == 0:
+            logger.info("[HW] send_command returned: %s", result)
 
     def _zero_torque_sync(self):
         cmd = HandCommand_t()
