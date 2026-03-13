@@ -141,19 +141,19 @@
     <body mocap="true" name="right-wrist" pos="0 0 0">
       <site name="right-wrist-mocap-site" rgba="0 0 1 1.0" size=".01" />
     </body>
-    <body mocap="true" name="right-thumb-tip" pos="0.020068 0.106653 0.028720" quat="0.991240 0.002656 0.130499 -0.020174">
+    <body mocap="true" name="right-thumb-tip" pos="0.022111 0.156839 0.028720" quat="0.991240 0.002656 0.130499 -0.020174">
       <site name="right-thumb-tip-mocap-site" rgba="0 0 1 1.0" size=".01" />
     </body>
-    <body mocap="true" name="right-index-finger-tip" pos="0.006500 0.026500 0.163500" quat="1.000000 0.000000 0.000000 0.000000">
+    <body mocap="true" name="right-index-finger-tip" pos="0.006500 0.026500 0.205748" quat="1.000000 0.000000 0.000000 0.000000">
       <site name="right-index-finger-tip-mocap-site" rgba="0 0 1 1.0" size=".01" />
     </body>
-    <body mocap="true" name="right-middle-finger-tip" pos="0.006500 0.004000 0.164000" quat="1.000000 0.000000 0.000000 0.000000">
+    <body mocap="true" name="right-middle-finger-tip" pos="0.006500 0.004000 0.206248" quat="1.000000 0.000000 0.000000 0.000000">
       <site name="right-middle-finger-tip-mocap-site" rgba="0 0 1 1.0" size=".01" />
     </body>
-    <body mocap="true" name="right-ring-finger-tip" pos="0.006500 -0.016000 0.161000" quat="1.000000 0.000000 0.000000 0.000000">
+    <body mocap="true" name="right-ring-finger-tip" pos="0.006500 -0.016000 0.203248" quat="1.000000 0.000000 0.000000 0.000000">
       <site name="right-ring-finger-tip-mocap-site" rgba="0 0 1 1.0" size=".01" />
     </body>
-    <body mocap="true" name="right-pinky-finger-tip" pos="0.006500 -0.036000 0.158000" quat="1.000000 0.000000 0.000000 0.000000">
+    <body mocap="true" name="right-pinky-finger-tip" pos="0.006500 -0.036000 0.200248" quat="1.000000 0.000000 0.000000 0.000000">
       <site name="right-pinky-finger-tip-mocap-site" rgba="0 0 1 1.0" size=".01" />
     </body>
   </worldbody>
