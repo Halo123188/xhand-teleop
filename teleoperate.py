@@ -125,17 +125,35 @@ def compute_xhand_finger_lengths(mj_model, mj_data):
     return lengths
 
 
-def update_mocap_bodies(mj_model, mj_data, poses_flat, xhand_finger_lengths):
+def compute_human_finger_lengths(poses_flat):
+    """Compute human wrist-to-fingertip distances from a single frame of VR data.
+
+    Returns:
+        dict mapping landmark name -> distance (meters) in MuJoCo coords.
+    """
+    wrist_mat_mj = vuer_to_mujoco(extract_landmark_se3(poses_flat, "wrist"))
+    wrist_pos = wrist_mat_mj[:3, 3]
+
+    lengths = {}
+    for landmark_name in FINGERTIP_SITES:
+        mat_mj = vuer_to_mujoco(extract_landmark_se3(poses_flat, landmark_name))
+        tip_pos = mat_mj[:3, 3]
+        lengths[landmark_name] = np.linalg.norm(tip_pos - wrist_pos)
+    return lengths
+
+
+def update_mocap_bodies(mj_model, mj_data, poses_flat, finger_scale_factors):
     """Update MuJoCo mocap bodies from Vuer hand landmark data.
 
-    Fingertip positions are auto-scaled so that any human hand maps to
-    full XHAND range of motion.
+    Fingertip positions are scaled by a constant per-finger factor so that
+    any human hand maps to full XHAND range of motion while preserving flexion.
 
     Args:
         mj_model: MuJoCo model.
         mj_data: MuJoCo data.
         poses_flat: Flat array of 400 floats from Vuer HAND_MOVE event.
-        xhand_finger_lengths: dict from compute_xhand_finger_lengths().
+        finger_scale_factors: dict mapping landmark name -> scale factor
+            (xhand_length / human_length), computed once at calibration.
     """
     # Get wrist position in MuJoCo coords (used as reference for scaling)
     wrist_mat_mj = vuer_to_mujoco(extract_landmark_se3(poses_flat, "wrist"))
@@ -154,14 +172,10 @@ def update_mocap_bodies(mj_model, mj_data, poses_flat, xhand_finger_lengths):
         mat_mj = vuer_to_mujoco(mat_vuer)
         pos = mat_mj[:3, 3]
 
-        # Scale fingertip positions relative to wrist
-        if landmark_name != "wrist" and landmark_name in xhand_finger_lengths:
+        # Scale fingertip positions relative to wrist using constant factor
+        if landmark_name != "wrist" and landmark_name in finger_scale_factors:
             offset = pos - wrist_pos_mj
-            human_dist = np.linalg.norm(offset)
-            if human_dist > 1e-4:  # avoid division by zero
-                xhand_dist = xhand_finger_lengths[landmark_name]
-                scale = xhand_dist / human_dist
-                pos = wrist_pos_mj + offset * scale
+            pos = wrist_pos_mj + offset * finger_scale_factors[landmark_name]
 
         # Set position
         mj_data.mocap_pos[mocap_id] = pos
@@ -244,6 +258,9 @@ def run(args):
 
             dt = 1.0 / args.control_rate
             frame_count = 0
+            # Track max observed human finger lengths (continuously updated)
+            max_human_lengths = {}
+            finger_scale_factors = {}
 
             logger.info("Teleoperation running at %.0f Hz. Ctrl+C to stop.", args.control_rate)
 
@@ -255,7 +272,19 @@ def run(args):
                     # 1. Update mocap bodies from latest VR hand data
                     poses = latest_hand_poses["right"]
                     if poses is not None:
-                        update_mocap_bodies(mj_model, mj_data, poses, xhand_finger_lengths)
+                        # Update max human finger lengths if we see longer ones
+                        human_lengths = compute_human_finger_lengths(poses)
+                        updated = False
+                        for name, length in human_lengths.items():
+                            if name in xhand_finger_lengths and length > max_human_lengths.get(name, 0):
+                                max_human_lengths[name] = length
+                                finger_scale_factors[name] = xhand_finger_lengths[name] / length
+                                updated = True
+                        if updated and frame_count % 50 == 0:
+                            logger.info("Scale factors: %s",
+                                        {k: f"{v:.3f}" for k, v in finger_scale_factors.items()})
+
+                        update_mocap_bodies(mj_model, mj_data, poses, finger_scale_factors)
 
                     # 2. Step MuJoCo (weld constraints solve IK)
                     mujoco.mj_step(mj_model, mj_data)
