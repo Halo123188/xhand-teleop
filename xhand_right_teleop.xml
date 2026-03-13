@@ -43,6 +43,10 @@
       <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_link" />
       <joint name="xhand_right_floating_base" type="free" />
       <site name="xhand_right_wrist_site" size="0.01" rgba="0 1 1 0.5" />
+      <!-- Palm collision -->
+      <geom class="collision" fromto="0 0.025 0.03  0 -0.035 0.03" size="0.012" name="palm_col1" />
+      <geom class="collision" fromto="0 0.025 0.07  0 -0.035 0.07" size="0.012" name="palm_col2" />
+      <geom class="collision" fromto="0 0.025 0.10  0 -0.035 0.10" size="0.010" name="palm_col3" />
       <body name="right_hand_thumb_bend_link" pos="0.0095 0.0228 0.0305">
         <inertial pos="-0.00116534 0.0144359 5.40665e-05" quat="0.5 0.5 -0.5 0.5" mass="0.0115145" diaginertia="1.57e-06 1.55e-06 6.2e-07" />
         <joint name="right_hand_thumb_bend_joint" pos="0 0 0" axis="0 0 -1" range="0 1.832" actuatorfrcrange="-1.1 1.1" />
@@ -52,12 +56,14 @@
           <joint name="right_hand_thumb_rota_joint1" pos="0 0 0" axis="1 0 0" range="-0.698 1.57" actuatorfrcrange="-1.1 1.1" />
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_thumb_rota_link1" />
           <geom pos="0 0.0553 0" quat="1 0 0 0" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_thumb_rotaback_link1" />
+          <geom class="collision" fromto="0 0 0  0 0.0553 0" size="0.009" name="thumb1_col" />
           <body name="right_hand_thumb_rota_link2" pos="0 0.0553 0">
             <inertial pos="-0.000878125 0.0226175 0.000584933" quat="0.552017 0.570821 -0.436085 0.423404" mass="0.0353687" diaginertia="9.15457e-06 7.80449e-06 3.52417e-06" />
             <joint name="right_hand_thumb_rota_joint2" pos="0 0 0" axis="1 0 0" range="0 1.57" actuatorfrcrange="-0.4 0.4" />
             <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_thumb_rota_link2" />
             <geom pos="0 0.0502276 0" quat="1 0 0 0" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_thumb_rotaback_link2" />
             <geom pos="0 0.0502276 0" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_thumb_rota_tip" />
+            <geom class="collision" fromto="0 0 0  0 0.0502 0" size="0.008" name="thumb2_col" />
             <site name="xhand_right_thumb_tip_site" pos="0 0.0502276 0" size="0.005" rgba="1 0 0 1" />
           </body>
         </body>
@@ -71,12 +77,14 @@
           <joint name="right_hand_index_joint1" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-1.1 1.1" />
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_index_rota_link1" />
           <geom pos="0 0 0.0558" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_index_rotaback_link1" />
+          <geom class="collision" fromto="0 0 0  0 0 0.0558" size="0.008" name="index1_col" />
           <body name="right_hand_index_rota_link2" pos="0 0 0.0558">
             <inertial pos="0.00113673 -0.000244276 0.0215292" quat="0.999532 -0.0305525 -0.00125688 0.000779224" mass="0.0160239" diaginertia="2.89425e-06 2.8494e-06 8.70431e-07" />
             <joint name="right_hand_index_joint2" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-0.4 0.4" />
             <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_index_rota_link2" />
             <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_index_rotaback_link2" />
             <geom pos="0 0 0.0422483" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_index_rota_tip" />
+            <geom class="collision" fromto="0 0 0  0 0 0.0422" size="0.007" name="index2_col" />
             <site name="xhand_right_index_finger_tip_site" pos="0 0 0.0422483" size="0.005" rgba="1 0 0 1" />
           </body>
         </body>
@@ -86,12 +94,14 @@
         <joint name="right_hand_mid_joint1" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-1.1 1.1" />
         <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_mid_link1" />
         <geom pos="0 0 0.0558" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_midback_link1" />
+        <geom class="collision" fromto="0 0 0  0 0 0.0558" size="0.008" name="mid1_col" />
         <body name="right_hand_mid_link2" pos="0 0 0.0558">
           <inertial pos="0.00113673 -0.000244276 0.0215292" quat="0.990864 -0.0238438 0.0479849 0.123764" mass="0.0160239" diaginertia="2.95368e-06 2.90633e-06 8.74071e-07" />
           <joint name="right_hand_mid_joint2" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-0.4 0.4" />
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_mid_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_midback_link2" />
           <geom pos="0 0 0.042248" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_mid_tip" />
+          <geom class="collision" fromto="0 0 0  0 0 0.0422" size="0.007" name="mid2_col" />
           <site name="xhand_right_middle_finger_tip_site" pos="0 0 0.042248" size="0.005" rgba="1 0 0 1" />
         </body>
       </body>
@@ -100,12 +110,14 @@
         <joint name="right_hand_ring_joint1" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-1.1 1.1" />
         <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_ring_link1" />
         <geom pos="0 0 0.0558" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_ringback_link1" />
+        <geom class="collision" fromto="0 0 0  0 0 0.0558" size="0.008" name="ring1_col" />
         <body name="right_hand_ring_link2" pos="0 0 0.0558">
           <inertial pos="0.00113673 -0.000244276 0.0215292" quat="0.990864 -0.0238438 0.0479849 0.123764" mass="0.0160239" diaginertia="2.95369e-06 2.90633e-06 8.74071e-07" />
           <joint name="right_hand_ring_joint2" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-0.4 0.4" />
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_ring_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_ringback_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_ring_tip" />
+          <geom class="collision" fromto="0 0 0  0 0 0.0422" size="0.007" name="ring2_col" />
           <site name="xhand_right_ring_finger_tip_site" pos="0 0 0.0422483" size="0.005" rgba="1 0 0 1" />
         </body>
       </body>
@@ -114,12 +126,14 @@
         <joint name="right_hand_pinky_joint1" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-1.1 1.1" />
         <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_pinky_link1" />
         <geom pos="0 0 0.0558" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_pinkyback_link1" />
+        <geom class="collision" fromto="0 0 0  0 0 0.0558" size="0.008" name="pinky1_col" />
         <body name="right_hand_pinky_link2" pos="0 0 0.0558">
           <inertial pos="0.00113673 -0.000244276 0.0215292" quat="0.990864 -0.0238438 0.0479849 0.123764" mass="0.0160239" diaginertia="2.95369e-06 2.90633e-06 8.74071e-07" />
           <joint name="right_hand_pinky_joint2" pos="0 0 0" axis="0 1 0" range="0 1.919" actuatorfrcrange="-0.4 0.4" />
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_pinky_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_pinkyback_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_pinky_tip" />
+          <geom class="collision" fromto="0 0 0  0 0 0.0422" size="0.007" name="pinky2_col" />
           <site name="xhand_right_pinky_finger_tip_site" pos="0 0 0.0422483" size="0.005" rgba="1 0 0 1" />
         </body>
       </body>
@@ -148,6 +162,10 @@
   <default>
     <joint damping="0.1" limited="true" solimplimit="0.95 0.99 0.001" solreflimit="0.02 1" />
     <equality solref="0.02 1" solimp="0.9 0.95 0.001 0.5 2" />
+    <geom contype="0" conaffinity="0" />
+    <default class="collision">
+      <geom contype="1" conaffinity="1" group="3" rgba="1 1 0 0.3" type="capsule" />
+    </default>
   </default>
   <visual>
     <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0" />
