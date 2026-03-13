@@ -58,7 +58,7 @@
             <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_thumb_rota_link2" />
             <geom pos="0 0.0502276 0" quat="1 0 0 0" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_thumb_rotaback_link2" />
             <geom pos="0 0.0502276 0" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_thumb_rota_tip" />
-            <site name="xhand_right_thumb_tip_site" size="0.005" rgba="1 0 0 1" />
+            <site name="xhand_right_thumb_tip_site" pos="0 0.0502276 0" size="0.005" rgba="1 0 0 1" />
           </body>
         </body>
       </body>
@@ -77,7 +77,7 @@
             <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_index_rota_link2" />
             <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_index_rotaback_link2" />
             <geom pos="0 0 0.0422483" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_index_rota_tip" />
-            <site name="xhand_right_index_finger_tip_site" size="0.005" rgba="1 0 0 1" />
+            <site name="xhand_right_index_finger_tip_site" pos="0 0 0.0422483" size="0.005" rgba="1 0 0 1" />
           </body>
         </body>
       </body>
@@ -92,7 +92,7 @@
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_mid_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_midback_link2" />
           <geom pos="0 0 0.042248" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_mid_tip" />
-          <site name="xhand_right_middle_finger_tip_site" size="0.005" rgba="1 0 0 1" />
+          <site name="xhand_right_middle_finger_tip_site" pos="0 0 0.042248" size="0.005" rgba="1 0 0 1" />
         </body>
       </body>
       <body name="right_hand_ring_link1" pos="0.0065 -0.016 0.1052">
@@ -106,7 +106,7 @@
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_ring_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_ringback_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_ring_tip" />
-          <site name="xhand_right_ring_finger_tip_site" size="0.005" rgba="1 0 0 1" />
+          <site name="xhand_right_ring_finger_tip_site" pos="0 0 0.0422483" size="0.005" rgba="1 0 0 1" />
         </body>
       </body>
       <body name="right_hand_pinky_link1" pos="0.0065 -0.036 0.1022">
@@ -120,7 +120,7 @@
           <geom type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_pinky_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.941 0.941 0.941 1" mesh="right_hand_pinkyback_link2" />
           <geom pos="0 0 0.0422483" type="mesh" rgba="0.055 0.055 0.063 1" mesh="right_hand_pinky_tip" />
-          <site name="xhand_right_pinky_finger_tip_site" size="0.005" rgba="1 0 0 1" />
+          <site name="xhand_right_pinky_finger_tip_site" pos="0 0 0.0422483" size="0.005" rgba="1 0 0 1" />
         </body>
       </body>
     </body>
