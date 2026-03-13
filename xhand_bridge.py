@@ -63,7 +63,7 @@ XHAND_JOINT_LIMITS = [
 ]
 
 # XHAND URDF joint names (1:1 with hardware IDs 0-11)
-XHAND_URDF_JOINT_NAMES = [
+XHAND_RIGHT_JOINT_NAMES = [
     "right_hand_thumb_bend_joint",   # 0
     "right_hand_thumb_rota_joint1",  # 1
     "right_hand_thumb_rota_joint2",  # 2
@@ -77,6 +77,24 @@ XHAND_URDF_JOINT_NAMES = [
     "right_hand_pinky_joint1",       # 10
     "right_hand_pinky_joint2",       # 11
 ]
+
+XHAND_LEFT_JOINT_NAMES = [
+    "left_hand_thumb_bend_joint",    # 0
+    "left_hand_thumb_rota_joint1",   # 1
+    "left_hand_thumb_rota_joint2",   # 2
+    "left_hand_index_bend_joint",    # 3
+    "left_hand_index_joint1",        # 4
+    "left_hand_index_joint2",        # 5
+    "left_hand_mid_joint1",          # 6
+    "left_hand_mid_joint2",          # 7
+    "left_hand_ring_joint1",         # 8
+    "left_hand_ring_joint2",         # 9
+    "left_hand_pinky_joint1",        # 10
+    "left_hand_pinky_joint2",        # 11
+]
+
+# Backward compat alias
+XHAND_URDF_JOINT_NAMES = XHAND_RIGHT_JOINT_NAMES
 
 
 # ---------------------------------------------------------------------------
@@ -167,9 +185,9 @@ class XHandBridge:
         await bridge.close()           # sends zero torque, then disconnects
     """
 
-    def __init__(self, config: XHandBridgeConfig, mj_model=None):
+    def __init__(self, config: XHandBridgeConfig, mj_model=None, joint_names=None):
         self._config = config
-        self._mapper = JointMapper(mj_model) if mj_model is not None else None
+        self._mapper = JointMapper(mj_model, joint_names) if mj_model is not None else None
         self._smoother = JointSmoother(NUM_XHAND_JOINTS, config.smoothing_window)
         self._device: Optional[object] = None  # XHandControl instance
         self._device_id: Optional[int] = None
