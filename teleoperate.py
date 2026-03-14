@@ -118,16 +118,21 @@ def run(args):
                 bridge._connected = True
                 bridge._send_task = asyncio.create_task(bridge._sender_loop())
 
-            # Try to launch MuJoCo viewer
+            # Try to launch MuJoCo viewer (tracking right wrist)
             viewer = None
             try:
                 viewer = mujoco.viewer.launch_passive(
                     model=mj_model, data=mj_data,
                     show_left_ui=False, show_right_ui=False,
                 )
-                mujoco.mjv_defaultFreeCamera(mj_model, viewer.cam)
+                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                viewer.cam.trackbodyid = mujoco.mj_name2id(
+                    mj_model, mujoco.mjtObj.mjOBJ_BODY, "xhand_right_base")
+                viewer.cam.distance = 0.5
+                viewer.cam.elevation = -20
+                viewer.cam.azimuth = 180
                 viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-                logger.info("MuJoCo viewer launched")
+                logger.info("MuJoCo viewer launched (tracking right wrist)")
             except Exception as e:
                 logger.warning("MuJoCo viewer unavailable (%s), running headless", e)
 

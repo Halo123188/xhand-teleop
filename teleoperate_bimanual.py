@@ -75,17 +75,25 @@ def run(args):
     logger.info("XHAND left finger lengths (m): %s",
                 {k: f"{v:.4f}" for k, v in xhand_finger_lengths_left.items()})
 
-    # -- XHAND bridges --
-    bridge_config = XHandBridgeConfig(
-        ethercat_interface=args.ethercat_interface,
+    # -- XHAND bridges (each hand on its own EtherCAT NIC) --
+    bridge_config_right = XHandBridgeConfig(
+        ethercat_interface=args.ethercat_interface_right,
         kp=args.kp,
         tor_max=args.tor_max,
         smoothing_window=args.smoothing_window,
         command_rate_hz=args.command_rate,
         dry_run=args.dry_run,
     )
-    bridge_right = XHandBridge(bridge_config, mj_model, joint_names=XHAND_RIGHT_JOINT_NAMES)
-    bridge_left = XHandBridge(bridge_config, mj_model, joint_names=XHAND_LEFT_JOINT_NAMES)
+    bridge_config_left = XHandBridgeConfig(
+        ethercat_interface=args.ethercat_interface_left,
+        kp=args.kp,
+        tor_max=args.tor_max,
+        smoothing_window=args.smoothing_window,
+        command_rate_hz=args.command_rate,
+        dry_run=args.dry_run,
+    )
+    bridge_right = XHandBridge(bridge_config_right, mj_model, joint_names=XHAND_RIGHT_JOINT_NAMES)
+    bridge_left = XHandBridge(bridge_config_left, mj_model, joint_names=XHAND_LEFT_JOINT_NAMES)
 
     # -- Vuer --
     Vuer.cors = "*"
@@ -135,18 +143,40 @@ def run(args):
                     bridge._connected = True
                     bridge._send_task = asyncio.create_task(bridge._sender_loop())
 
-            # Try to launch MuJoCo viewer
-            viewer = None
+            # Launch two MuJoCo viewers — one tracking each hand
+            viewer_right = None
+            viewer_left = None
             try:
-                viewer = mujoco.viewer.launch_passive(
+                viewer_right = mujoco.viewer.launch_passive(
                     model=mj_model, data=mj_data,
                     show_left_ui=False, show_right_ui=False,
                 )
-                mujoco.mjv_defaultFreeCamera(mj_model, viewer.cam)
-                viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-                logger.info("MuJoCo viewer launched")
+                viewer_right.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                viewer_right.cam.trackbodyid = mujoco.mj_name2id(
+                    mj_model, mujoco.mjtObj.mjOBJ_BODY, "xhand_right_base")
+                viewer_right.cam.distance = 0.5
+                viewer_right.cam.elevation = -20
+                viewer_right.cam.azimuth = 180
+                viewer_right.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+                logger.info("MuJoCo viewer launched (tracking right hand)")
             except Exception as e:
-                logger.warning("MuJoCo viewer unavailable (%s), running headless", e)
+                logger.warning("Right viewer unavailable (%s), running headless", e)
+
+            try:
+                viewer_left = mujoco.viewer.launch_passive(
+                    model=mj_model, data=mj_data,
+                    show_left_ui=False, show_right_ui=False,
+                )
+                viewer_left.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                viewer_left.cam.trackbodyid = mujoco.mj_name2id(
+                    mj_model, mujoco.mjtObj.mjOBJ_BODY, "xhand_left_base")
+                viewer_left.cam.distance = 0.5
+                viewer_left.cam.elevation = -20
+                viewer_left.cam.azimuth = 180
+                viewer_left.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+                logger.info("MuJoCo viewer launched (tracking left hand)")
+            except Exception as e:
+                logger.warning("Left viewer unavailable (%s)", e)
 
             dt = 1.0 / args.control_rate
             frame_count = 0
@@ -162,7 +192,9 @@ def run(args):
 
             try:
                 while True:
-                    if viewer is not None and not viewer.is_running():
+                    if viewer_right is not None and not viewer_right.is_running():
+                        break
+                    if viewer_left is not None and not viewer_left.is_running():
                         break
 
                     # 1a. Update mocap bodies — RIGHT
@@ -198,9 +230,11 @@ def run(args):
                     await bridge_right.send_qpos(mj_data.qpos)
                     await bridge_left.send_qpos(mj_data.qpos)
 
-                    # 4. Sync viewer if available
-                    if viewer is not None:
-                        viewer.sync()
+                    # 4. Sync viewers
+                    if viewer_right is not None:
+                        viewer_right.sync()
+                    if viewer_left is not None:
+                        viewer_left.sync()
 
                     # 5. Log stats periodically
                     frame_count += 1
@@ -217,8 +251,10 @@ def run(args):
                     await asyncio.sleep(dt)
             finally:
                 logger.info("Shutting down...")
-                if viewer is not None:
-                    viewer.close()
+                if viewer_right is not None:
+                    viewer_right.close()
+                if viewer_left is not None:
+                    viewer_left.close()
                 await bridge_right.close()
                 await bridge_left.close()
         except Exception as e:
@@ -238,7 +274,8 @@ def main(
     control_rate: float = 50.0,             # Control loop rate in Hz
     # XHAND
     dry_run: bool = False,                  # No hardware (MuJoCo only)
-    ethercat_interface: str = "enp3s0",     # EtherCAT NIC
+    ethercat_interface_right: str = "enp3s0",  # EtherCAT NIC for right hand
+    ethercat_interface_left: str = "enp4s0",   # EtherCAT NIC for left hand
     kp: float = 100.0,                      # PD position gain
     tor_max: float = 50.0,                  # Max torque (0-100)
     smoothing_window: int = 5,              # Moving avg window
@@ -259,7 +296,10 @@ def main(
     print("=" * 50)
     print(f"  MuJoCo:    {args.mjcf}")
     print(f"  Vuer:      {args.host}:{args.port}")
-    print(f"  Hardware:  {'DRY RUN' if args.dry_run else f'EtherCAT ({args.ethercat_interface})'}")
+    if args.dry_run:
+        print(f"  Hardware:  DRY RUN")
+    else:
+        print(f"  Hardware:  EtherCAT right={args.ethercat_interface_right}, left={args.ethercat_interface_left}")
     print(f"  Rate:      {args.control_rate} Hz")
     print(f"  Smoothing: {args.smoothing_window}-frame moving average")
     print("=" * 50)
