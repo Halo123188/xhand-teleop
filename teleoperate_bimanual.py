@@ -143,40 +143,24 @@ def run(args):
                     bridge._connected = True
                     bridge._send_task = asyncio.create_task(bridge._sender_loop())
 
-            # Launch two MuJoCo viewers — one tracking each hand
-            viewer_right = None
-            viewer_left = None
+            # Launch a single MuJoCo viewer tracking the chosen hand
+            viewer = None
+            track_body = f"xhand_{args.viewer_hand}_base"
             try:
-                viewer_right = mujoco.viewer.launch_passive(
+                viewer = mujoco.viewer.launch_passive(
                     model=mj_model, data=mj_data,
                     show_left_ui=False, show_right_ui=False,
                 )
-                viewer_right.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-                viewer_right.cam.trackbodyid = mujoco.mj_name2id(
-                    mj_model, mujoco.mjtObj.mjOBJ_BODY, "xhand_right_base")
-                viewer_right.cam.distance = 0.5
-                viewer_right.cam.elevation = -20
-                viewer_right.cam.azimuth = 180
-                viewer_right.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-                logger.info("MuJoCo viewer launched (tracking right hand)")
+                viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+                viewer.cam.trackbodyid = mujoco.mj_name2id(
+                    mj_model, mujoco.mjtObj.mjOBJ_BODY, track_body)
+                viewer.cam.distance = 0.5
+                viewer.cam.elevation = -20
+                viewer.cam.azimuth = 180
+                viewer.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
+                logger.info("MuJoCo viewer launched (tracking %s hand)", args.viewer_hand)
             except Exception as e:
-                logger.warning("Right viewer unavailable (%s), running headless", e)
-
-            try:
-                viewer_left = mujoco.viewer.launch_passive(
-                    model=mj_model, data=mj_data,
-                    show_left_ui=False, show_right_ui=False,
-                )
-                viewer_left.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
-                viewer_left.cam.trackbodyid = mujoco.mj_name2id(
-                    mj_model, mujoco.mjtObj.mjOBJ_BODY, "xhand_left_base")
-                viewer_left.cam.distance = 0.5
-                viewer_left.cam.elevation = -20
-                viewer_left.cam.azimuth = 180
-                viewer_left.opt.frame = mujoco.mjtFrame.mjFRAME_SITE
-                logger.info("MuJoCo viewer launched (tracking left hand)")
-            except Exception as e:
-                logger.warning("Left viewer unavailable (%s)", e)
+                logger.warning("Viewer unavailable (%s), running headless", e)
 
             dt = 1.0 / args.control_rate
             frame_count = 0
@@ -192,9 +176,7 @@ def run(args):
 
             try:
                 while True:
-                    if viewer_right is not None and not viewer_right.is_running():
-                        break
-                    if viewer_left is not None and not viewer_left.is_running():
+                    if viewer is not None and not viewer.is_running():
                         break
 
                     # 1a. Update mocap bodies — RIGHT
@@ -230,11 +212,9 @@ def run(args):
                     await bridge_right.send_qpos(mj_data.qpos)
                     await bridge_left.send_qpos(mj_data.qpos)
 
-                    # 4. Sync viewers
-                    if viewer_right is not None:
-                        viewer_right.sync()
-                    if viewer_left is not None:
-                        viewer_left.sync()
+                    # 4. Sync viewer
+                    if viewer is not None:
+                        viewer.sync()
 
                     # 5. Log stats periodically
                     frame_count += 1
@@ -251,10 +231,8 @@ def run(args):
                     await asyncio.sleep(dt)
             finally:
                 logger.info("Shutting down...")
-                if viewer_right is not None:
-                    viewer_right.close()
-                if viewer_left is not None:
-                    viewer_left.close()
+                if viewer is not None:
+                    viewer.close()
                 await bridge_right.close()
                 await bridge_left.close()
         except Exception as e:
@@ -272,6 +250,7 @@ def main(
     # MuJoCo
     mjcf: str = _MJCF_PATH,                # Path to MJCF model
     control_rate: float = 50.0,             # Control loop rate in Hz
+    viewer_hand: str = "right",             # Which hand to track in viewer: "left" or "right"
     # XHAND
     dry_run: bool = False,                  # No hardware (MuJoCo only)
     ethercat_interface_right: str = "enp3s0",  # EtherCAT NIC for right hand
@@ -307,6 +286,10 @@ def main(
     if not XHAND_AVAILABLE and not args.dry_run:
         print(f"\nWARNING: xhand_control SDK not found: {XHAND_IMPORT_ERROR}")
         print("Use --dry_run for testing without hardware.\n")
+
+    if args.viewer_hand not in ("left", "right"):
+        print(f"ERROR: --viewer_hand must be 'left' or 'right', got '{args.viewer_hand}'")
+        sys.exit(1)
 
     if not Path(args.mjcf).exists():
         print(f"ERROR: MJCF not found: {args.mjcf}")
