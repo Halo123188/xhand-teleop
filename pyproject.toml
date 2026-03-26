@@ -10,3 +10,15 @@ dependencies = [
     "vuer>=0.1.5",
     "params-proto>=3.0",
 ]
+
+[project.scripts]
+xhand-teleop = "xhand_teleop.teleoperate:main"
+xhand-teleop-bimanual = "xhand_teleop.teleoperate_bimanual:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["xhand_teleop*"]
