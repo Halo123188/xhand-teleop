@@ -3,4 +3,8 @@ __pycache__/
 .venv/
 *.egg-info/
 .DS_Store
-xhand_control_sdk_py
+dist/
+build/
+xhand_control_sdk_py/
+assets/xhand_urdf
+assets/XHAND1_URDF_ver 1.3

@@ -76,13 +76,15 @@ xhand-teleop/
 │   └── scripts/                   # Development tools
 │       ├── convert_urdf_to_mjcf.py # URDF -> MJCF converter
 │       └── collect_demo.py        # VR demo collection
-├── xhand_mjcf/                    # MuJoCo scene files + meshes
-│   ├── meshes/
-│   │   ├── right/                 # Right hand STL files
-│   │   └── left/                  # Left hand STL files
-│   ├── xhand_right_teleop.xml
-│   ├── xhand_left_teleop.xml
-│   └── xhand_bimanual_teleop.xml
+├── assets/                        # All servable assets
+│   ├── xhand_mjcf/               # MuJoCo scene files + meshes
+│   │   ├── meshes/
+│   │   │   ├── right/            # Right hand STL files
+│   │   │   └── left/             # Left hand STL files
+│   │   ├── xhand_right_teleop.xml
+│   │   ├── xhand_left_teleop.xml
+│   │   └── xhand_bimanual_teleop.xml
+│   └── xhand_urdf/               # Original XHAND URDF + meshes
 └── pyproject.toml
 ```
 

@@ -29,40 +29,18 @@ from xhand_teleop.bridge import (
 )
 
 _ROOT = Path(__file__).resolve().parent.parent.parent
-_MJCF_DIR = _ROOT / "xhand_mjcf"
+_ASSETS_DIR = _ROOT / "assets"
+_MJCF_DIR = _ASSETS_DIR / "xhand_mjcf"
 _MJCF_PATH = str((_MJCF_DIR / "xhand_bimanual_teleop.xml").resolve())
 
-_RIGHT_MESHES = [
-    "right_hand_link", "right_hand_ee_link", "right_hand_back_link",
-    "right_hand_thumb_bend_link", "right_hand_thumb_rota_link1",
-    "right_hand_thumb_rotaback_link1", "right_hand_thumb_rota_link2",
-    "right_hand_thumb_rotaback_link2", "right_hand_thumb_rota_tip",
-    "right_hand_index_bend_link", "right_hand_index_rota_link1",
-    "right_hand_index_rotaback_link1", "right_hand_index_rota_link2",
-    "right_hand_index_rotaback_link2", "right_hand_index_rota_tip",
-    "right_hand_mid_link1", "right_hand_midback_link1",
-    "right_hand_mid_link2", "right_hand_midback_link2", "right_hand_mid_tip",
-    "right_hand_ring_link1", "right_hand_ringback_link1",
-    "right_hand_ring_link2", "right_hand_ringback_link2", "right_hand_ring_tip",
-    "right_hand_pinky_link1", "right_hand_pinkyback_link1",
-    "right_hand_pinky_link2", "right_hand_pinkyback_link2", "right_hand_pinky_tip",
-]
 
-_LEFT_MESHES = [
-    "left_hand_link", "left_hand_ee_link", "left_hand_back_link",
-    "left_hand_thumb_bend_link", "left_hand_thumb_rota_link1",
-    "left_hand_thumb_rotaback_link1", "left_hand_thumb_rota_link2",
-    "left_hand_thumb_rotaback_link2", "left_hand_thumb_rota_tip",
-    "left_hand_index_bend_link", "left_hand_index_rota_link1",
-    "left_hand_index_rotaback_link1", "left_hand_index_rota_link2",
-    "left_hand_index_rotaback_link2", "left_hand_index_rota_tip",
-    "left_hand_mid_link1", "left_hand_midback_link1",
-    "left_hand_mid_link2", "left_hand_midback_link2", "left_hand_mid_tip",
-    "left_hand_ring_link1", "left_hand_ringback_link1",
-    "left_hand_ring_link2", "left_hand_ringback_link2", "left_hand_ring_tip",
-    "left_hand_pinky_link1", "left_hand_pinkyback_link1",
-    "left_hand_pinky_link2", "left_hand_pinkyback_link2", "left_hand_pinky_tip",
-]
+def _collect_asset_urls(prefix, mjcf_name, mesh_dirs):
+    """Glob STL files from mesh directories and build asset URL list."""
+    urls = [prefix + f"xhand_mjcf/{mjcf_name}"]
+    for mesh_dir in mesh_dirs:
+        for stl in sorted((_MJCF_DIR / mesh_dir).glob("*.STL")):
+            urls.append(prefix + f"xhand_mjcf/{mesh_dir}/{stl.name}")
+    return urls
 
 
 def run(args):
@@ -83,12 +61,12 @@ def run(args):
     bridge_right = _make_bridge(args.ethercat_interface_right, XHAND_RIGHT_JOINT_NAMES)
     bridge_left = _make_bridge(args.ethercat_interface_left, XHAND_LEFT_JOINT_NAMES)
 
-    app = Vuer(host="0.0.0.0", port=args.port, static_root=str(_ROOT))
+    app = Vuer(host="0.0.0.0", port=args.port, workspace=str(_ASSETS_DIR))
 
     prefix = args.server_url.rstrip("/") + "/workspace/"
-    asset_urls = [prefix + "xhand_mjcf/xhand_bimanual_teleop.xml"]
-    asset_urls += [prefix + f"xhand_mjcf/meshes/right/{m}.STL" for m in _RIGHT_MESHES]
-    asset_urls += [prefix + f"xhand_mjcf/meshes/left/{m}.STL" for m in _LEFT_MESHES]
+    asset_urls = _collect_asset_urls(
+        prefix, "xhand_bimanual_teleop.xml", ["meshes/right", "meshes/left"],
+    )
 
     frame_n = {"n": 0}
 
