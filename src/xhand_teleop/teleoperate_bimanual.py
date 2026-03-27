@@ -128,7 +128,7 @@ def main(
     ethercat_interface_right: str = "enp3s0",
     ethercat_interface_left: str = "enp4s0",
     kp: float = 100.0, tor_max: float = 50.0,
-    smoothing_window: int = 5, command_rate: float = 50.0,
+    smoothing_window: int = 2, command_rate: float = 100.0,
 ):
     """XHAND bimanual teleoperation via Apple Vision Pro."""
     import types

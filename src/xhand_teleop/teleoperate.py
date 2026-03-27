@@ -120,7 +120,7 @@ def main(
     hand_scale: float = 1.25,
     ethercat_interface: str = "enp3s0",
     kp: float = 100.0, tor_max: float = 50.0,
-    smoothing_window: int = 5, command_rate: float = 50.0,
+    smoothing_window: int = 2, command_rate: float = 100.0,
 ):
     """XHAND right-hand teleoperation via Apple Vision Pro."""
     import types

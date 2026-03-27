@@ -136,21 +136,35 @@ class JointMapper:
 # ---------------------------------------------------------------------------
 
 class JointSmoother:
-    """N-frame moving average filter for joint positions."""
+    """Exponential moving average filter for joint positions.
 
-    def __init__(self, num_joints: int = NUM_XHAND_JOINTS, window_size: int = 5):
-        self._buffers: list[deque] = [deque(maxlen=window_size) for _ in range(num_joints)]
+    Unlike a window-based moving average, EMA reacts instantly to new
+    values while still suppressing high-frequency noise.  The *alpha*
+    parameter (0, 1] controls responsiveness:
+        alpha = 1.0  →  no smoothing (pass-through)
+        alpha = 0.5  →  moderate smoothing
+        alpha = 0.2  →  heavy smoothing
+    """
+
+    def __init__(self, num_joints: int = NUM_XHAND_JOINTS, window_size: int = 2,
+                 alpha: float | None = None):
+        # Derive alpha from window_size for backward-compat:
+        #   alpha = 2 / (window_size + 1)  (standard EMA formula)
+        if alpha is not None:
+            self._alpha = np.clip(alpha, 0.01, 1.0)
+        else:
+            self._alpha = np.clip(2.0 / (window_size + 1), 0.01, 1.0)
+        self._prev: np.ndarray | None = None
 
     def smooth(self, positions: np.ndarray) -> np.ndarray:
-        smoothed = np.zeros_like(positions)
-        for i, val in enumerate(positions):
-            self._buffers[i].append(val)
-            smoothed[i] = np.mean(self._buffers[i])
-        return smoothed
+        if self._prev is None:
+            self._prev = positions.copy()
+            return positions.copy()
+        self._prev = self._alpha * positions + (1.0 - self._alpha) * self._prev
+        return self._prev.copy()
 
     def reset(self):
-        for buf in self._buffers:
-            buf.clear()
+        self._prev = None
 
 
 # ---------------------------------------------------------------------------
@@ -173,8 +187,8 @@ class XHandBridgeConfig:
     ethercat_interface: str = "enp3s0"
     kp: float = 100.0
     tor_max: float = 50.0
-    smoothing_window: int = 5
-    command_rate_hz: float = 50.0
+    smoothing_window: int = 2
+    command_rate_hz: float = 100.0
     dry_run: bool = False
 
 
