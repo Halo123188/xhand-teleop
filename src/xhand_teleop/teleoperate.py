@@ -12,8 +12,11 @@ Usage:
 """
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s: %(message)s")
 
 import mujoco
 import numpy as np
@@ -56,6 +59,19 @@ def run(args):
         mj_model, joint_names=XHAND_RIGHT_JOINT_NAMES,
     )
 
+    # Connect hardware BEFORE starting Vuer so EtherCAT init doesn't block the event loop
+    try:
+        bridge.connect_and_start()
+        print(f"[BRIDGE] Hardware connected successfully (dry_run={bridge._config.dry_run})")
+    except Exception as e:
+        print(f"\n{'='*60}")
+        print(f"WARNING: XHAND hardware init FAILED: {e}")
+        print(f"Falling back to DRY RUN mode — NO commands will be sent!")
+        print(f"{'='*60}\n")
+        bridge._config.dry_run = True
+        bridge._connected = True
+        bridge.connect_and_start()
+
     app = Vuer(host="0.0.0.0", port=args.port, workspace=str(_ASSETS_DIR))
 
     prefix = args.server_url.rstrip("/") + "/workspace/"
@@ -72,17 +88,10 @@ def run(args):
         frame_n["n"] += 1
         if frame_n["n"] % 100 == 1:
             print(f"[frame {frame_n['n']}] qpos({len(qpos)}): {qpos[:7]}...")
-        await bridge.send_qpos(qpos)
+        bridge.send_qpos(qpos)
 
     @app.spawn(start=True)
     async def main_loop(session: VuerSession):
-        try:
-            await bridge.start()
-        except Exception:
-            bridge._config.dry_run = True
-            bridge._connected = True
-            bridge._send_task = asyncio.create_task(bridge._sender_loop())
-
         session.set @ DefaultScene()
         session.upsert @ Hands(stream=True, key="hands", scale=args.hand_scale)
         await asyncio.sleep(1.0)
@@ -99,7 +108,7 @@ def run(args):
             while True:
                 await asyncio.sleep(1.0)
         finally:
-            await bridge.close()
+            await bridge.close()  # stops sender loop but keeps EtherCAT alive for reconnect
 
 
 @proto.cli
