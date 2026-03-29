@@ -18,20 +18,18 @@ Usage:
     ngrok http 8012
 
     # Terminal 2: Vuer server (this script, Python 3.10+)
-    python -m scripts.teleop_avp --server_url https://XXXX.ngrok.app
+    python src/astribot/teleop_avp.py --server_url https://XXXX.ngrok.app
 
     # Terminal 3: ROS client (on robot machine, ROS Python)
-    python -m scripts.teleop_avp_ros --server_uri ws://<vuer-ip>:8012
+    python src/astribot/teleop_avp_ros.py --server_uri ws://localhost:8012
 """
 
-import base64
 import logging
-import time
 from asyncio import sleep
 
 from vuer import Vuer, VuerSession
 from vuer.events import ClientEvent, ServerEvent
-from vuer.schemas import Scene, Hands, Head, ImageBackground
+from vuer.schemas import DefaultScene, Hands, Head, ImageBackground
 
 logging.basicConfig(level=logging.WARNING, format="%(name)s - %(levelname)s - %(message)s")
 
@@ -58,59 +56,78 @@ def main(
 
     app = Vuer(host="0.0.0.0", port=port)
 
-    # Camera frame from ROS client (written by handler, read by HUD loop)
+    # Camera frame from ROS client (written by handler, read by browser HUD loop)
     camera_state = {"jpeg": None}
 
-    # -- Forward AVP tracking to ROS client via ServerEvent broadcast --
+    # Track connected Python (ROS) client session IDs
+    python_sessions: set = set()
+
+    # ---- Python client session (ROS side) ----
+    # Just keeps the connection alive; no scene setup needed.
+
+    @app.spawn(client="python")
+    async def python_loop(session: VuerSession):
+        ws_id = session.CURRENT_WS_ID
+        python_sessions.add(ws_id)
+        print(f"ROS client connected: {ws_id}")
+        try:
+            while True:
+                await sleep(1.0)
+        finally:
+            python_sessions.discard(ws_id)
+            print(f"ROS client disconnected: {ws_id}")
+
+    # ---- Forward AVP tracking → all connected Python clients ----
 
     @app.add_handler("HAND_MOVE")
     async def on_hand_move(event: ClientEvent, session: VuerSession):
-        # Forward hand data to all websocket clients (including ROS VuerClient)
-        session.send @ HandTrackingEvent(value=event.value)
+        ev = HandTrackingEvent(event.value)
+        for ws_id in list(python_sessions):
+            await session.vuer.send(ws_id=ws_id, event=ev)
 
     @app.add_handler("HEAD_MOVE")
     async def on_head_move(event: ClientEvent, session: VuerSession):
         matrix = event.value.get("matrix")
         if matrix is not None:
-            session.send @ HeadTrackingEvent(value={"matrix": matrix})
+            ev = HeadTrackingEvent({"matrix": matrix})
+            for ws_id in list(python_sessions):
+                await session.vuer.send(ws_id=ws_id, event=ev)
 
-    # -- Receive camera frames from ROS client --
+    # ---- Receive camera frames from ROS client ----
 
     @app.add_handler("CAMERA_FRAME")
     async def on_camera_frame(event: ClientEvent, session: VuerSession):
-        camera_state["jpeg"] = event.value.get("jpeg")
+        jpeg = event.value.get("jpeg")
+        if jpeg is not None:
+            camera_state["jpeg"] = jpeg
 
-    # -- Main session --
+    # ---- Browser (AVP) session ----
 
-    @app.spawn(start=True)
+    @app.spawn(start=True, client="browser")
     async def main_loop(session: VuerSession):
-        session.set @ Scene()
-        session.upsert @ Hands(stream=True, key="hands", scale=1)
-        session.upsert @ Head(stream=True, key="head_tracking", fps=30)
+        print(f"[browser] client connected: {session.CURRENT_WS_ID}")
+        session.set @ DefaultScene(
+            Hands(stream=True, fps=30, key="hands"),
+            Head(stream=True, fps=30, key="head_tracking"),
+        )
 
-        await sleep(2.0)
+        await sleep(1.0)
         print("Vuer server ready — waiting for AVP and ROS client...")
 
         interval = 1.0 / max(camera_fps, 1)
         while True:
-            # Display camera from robot as HUD
             jpeg = camera_state["jpeg"]
-            if jpeg is not None and isinstance(jpeg, bytes):
-                data_uri = "data:image/jpeg;base64," + base64.b64encode(jpeg).decode("ascii")
+            if jpeg is not None:
                 session.upsert(
                     ImageBackground(
-                        data_uri,
+                        src=jpeg,
                         format="jpeg",
-                        quality=75,
                         key="robot-camera",
                         interpolate=True,
-                        fixed=True,
-                        distanceToCamera=1,
-                        position=[0, 0, -3],
+                        distanceToCamera=16,
                     ),
                     to="bgChildren",
                 )
-
             await sleep(interval)
 
 
