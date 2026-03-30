@@ -33,7 +33,7 @@ from xhand_teleop.bridge import (
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _ASSETS_DIR = _ROOT / "assets"
 _MJCF_DIR = _ASSETS_DIR / "xhand_mjcf"
-_MJCF_PATH = str((_MJCF_DIR / "xhand_right_teleop.xml").resolve())
+_MJCF_PATH = str((_MJCF_DIR / "xhand_right_teleop_lite.xml").resolve())
 
 
 def _collect_asset_urls(prefix, mjcf_name, mesh_dirs):
@@ -75,7 +75,12 @@ def run(args):
     app = Vuer(host="0.0.0.0", port=args.port, workspace=str(_ASSETS_DIR))
 
     prefix = args.server_url.rstrip("/") + "/workspace/"
-    asset_urls = _collect_asset_urls(prefix, "xhand_right_teleop.xml", ["meshes/right"])
+    mjcf_name = Path(args.mjcf).name
+    # Lite models have no mesh assets; full models need mesh directories
+    if "lite" in mjcf_name:
+        asset_urls = [prefix + f"xhand_mjcf/{mjcf_name}"]
+    else:
+        asset_urls = _collect_asset_urls(prefix, mjcf_name, ["meshes/right"])
 
     frame_n = {"n": 0}
 
@@ -92,12 +97,17 @@ def run(args):
 
     @app.spawn(start=True)
     async def main_loop(session: VuerSession):
+        # Restart the sender thread if a previous session closed it
+        if bridge._stopped:
+            bridge.connect_and_start()
+            print("[BRIDGE] Sender restarted for new session")
+
         session.set @ DefaultScene()
         session.upsert @ Hands(stream=True, key="hands", scale=args.hand_scale)
         await asyncio.sleep(1.0)
         session.upsert @ MuJoCo(
             key="xhand-right",
-            src=prefix + "xhand_mjcf/xhand_right_teleop.xml",
+            src=prefix + f"xhand_mjcf/{mjcf_name}",
             assets=asset_urls,
             useLights=True,
             useMocap=True,

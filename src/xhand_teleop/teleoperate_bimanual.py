@@ -11,6 +11,7 @@ Usage:
     python -m xhand_teleop.teleoperate_bimanual --dry_run --server_url https://YOUR.ngrok.app
 """
 
+import atexit
 import asyncio
 import sys
 from pathlib import Path
@@ -31,7 +32,7 @@ from xhand_teleop.bridge import (
 _ROOT = Path(__file__).resolve().parent.parent.parent
 _ASSETS_DIR = _ROOT / "assets"
 _MJCF_DIR = _ASSETS_DIR / "xhand_mjcf"
-_MJCF_PATH = str((_MJCF_DIR / "xhand_bimanual_teleop.xml").resolve())
+_MJCF_PATH = str((_MJCF_DIR / "xhand_bimanual_teleop_lite.xml").resolve())
 
 
 def _collect_asset_urls(prefix, mjcf_name, mesh_dirs):
@@ -69,14 +70,23 @@ def run(args):
             bridge._config.dry_run = True
             bridge.connect_and_start()
 
+    def _cleanup():
+        loop = asyncio.new_event_loop()
+        loop.run_until_complete(bridge_right.close())
+        loop.run_until_complete(bridge_left.close())
+        loop.close()
+    atexit.register(_cleanup)
+
     app = Vuer(host="0.0.0.0", port=args.port, workspace=str(_ASSETS_DIR))
 
     prefix = args.server_url.rstrip("/") + "/workspace/"
-    asset_urls = _collect_asset_urls(
-        prefix, "xhand_bimanual_teleop.xml", ["meshes/right", "meshes/left"],
-    )
+    # Use lite model (no meshes) for browser WASM — much faster IK loop
+    browser_mjcf = "xhand_bimanual_teleop_lite.xml"
+    asset_urls = [prefix + f"xhand_mjcf/{browser_mjcf}"]
 
-    frame_n = {"n": 0}
+    import time as _time
+    frame_n = {"n": 0, "bad": 0}
+    _t0 = _time.monotonic()
 
     @app.add_handler("ON_MUJOCO_FRAME")
     async def on_frame(event: ClientEvent, session: VuerSession):
@@ -86,13 +96,13 @@ def run(args):
         qpos = np.array(kf["qpos"], dtype=np.float64)
         expected = mj_model.nq
         if len(qpos) != expected:
-            if frame_n["n"] == 0:
-                print(f"WARNING: qpos size {len(qpos)} != expected {expected}, waiting for correct model...")
-            frame_n["n"] += 1
+            frame_n["bad"] += 1
+            if frame_n["bad"] <= 5:
+                print(f"[BAD FRAME #{frame_n['bad']}] qpos size {len(qpos)} != {expected}, t={_time.monotonic()-_t0:.1f}s")
             return
         frame_n["n"] += 1
-        if frame_n["n"] % 100 == 1:
-            print(f"[frame {frame_n['n']}] qpos({len(qpos)}): {qpos[:7]}...")
+        if frame_n["n"] <= 3 or frame_n["n"] % 500 == 0:
+            print(f"[frame {frame_n['n']}] t={_time.monotonic()-_t0:.1f}s bad_before={frame_n['bad']} qpos: {qpos[:7]}...")
         bridge_right.send_qpos(qpos)
         bridge_left.send_qpos(qpos)
 
@@ -100,10 +110,10 @@ def run(args):
     async def main_loop(session: VuerSession):
         session.set @ DefaultScene()
         session.upsert @ Hands(stream=True, key="hands", scale=args.hand_scale)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(0.3)
         session.upsert @ MuJoCo(
             key="xhand-bimanual",
-            src=prefix + "xhand_mjcf/xhand_bimanual_teleop.xml",
+            src=prefix + f"xhand_mjcf/{browser_mjcf}",
             assets=asset_urls,
             useLights=True,
             useMocap=True,
@@ -125,10 +135,10 @@ def main(
     server_url: str = None,
     dry_run: bool = False,
     hand_scale: float = 1.25,
-    ethercat_interface_right: str = "enp3s0",
-    ethercat_interface_left: str = "enp4s0",
+    ethercat_interface_right: str = "enx6c6e071e7c95",
+    ethercat_interface_left: str = "enx5c857e35d912",
     kp: float = 100.0, tor_max: float = 50.0,
-    smoothing_window: int = 2, command_rate: float = 100.0,
+    smoothing_window: int = 1, command_rate: float = 100.0,
 ):
     """XHAND bimanual teleoperation via Apple Vision Pro."""
     import types

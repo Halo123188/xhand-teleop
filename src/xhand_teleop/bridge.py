@@ -138,26 +138,21 @@ class JointMapper:
 class JointSmoother:
     """Exponential moving average filter for joint positions.
 
-    Unlike a window-based moving average, EMA reacts instantly to new
-    values while still suppressing high-frequency noise.  The *alpha*
-    parameter (0, 1] controls responsiveness:
-        alpha = 1.0  →  no smoothing (pass-through)
-        alpha = 0.5  →  moderate smoothing
-        alpha = 0.2  →  heavy smoothing
+    EMA reacts faster to direction changes than a simple moving average
+    while still damping high-frequency noise.  alpha=1.0 means no
+    smoothing (pass-through); alpha→0 means heavy smoothing.
     """
 
-    def __init__(self, num_joints: int = NUM_XHAND_JOINTS, window_size: int = 2,
-                 alpha: float | None = None):
-        # Derive alpha from window_size for backward-compat:
-        #   alpha = 2 / (window_size + 1)  (standard EMA formula)
-        if alpha is not None:
-            self._alpha = np.clip(alpha, 0.01, 1.0)
-        else:
-            self._alpha = np.clip(2.0 / (window_size + 1), 0.01, 1.0)
-        self._prev: np.ndarray | None = None
+    def __init__(self, num_joints: int = NUM_XHAND_JOINTS, window_size: int = 1):
+        # Map legacy window_size to an EMA alpha:
+        #   window=1 → alpha=1.0 (no smoothing)
+        #   window=2 → alpha=0.67
+        #   window=5 → alpha=0.33
+        self._alpha = 2.0 / (window_size + 1) if window_size > 1 else 1.0
+        self._prev: Optional[np.ndarray] = None
 
     def smooth(self, positions: np.ndarray) -> np.ndarray:
-        if self._prev is None:
+        if self._prev is None or self._alpha >= 1.0:
             self._prev = positions.copy()
             return positions.copy()
         self._prev = self._alpha * positions + (1.0 - self._alpha) * self._prev
@@ -187,8 +182,8 @@ class XHandBridgeConfig:
     ethercat_interface: str = "enp3s0"
     kp: float = 100.0
     tor_max: float = 50.0
-    smoothing_window: int = 2
-    command_rate_hz: float = 100.0
+    smoothing_window: int = 5
+    command_rate_hz: float = 50.0
     dry_run: bool = False
 
 
@@ -434,6 +429,7 @@ def _hand_worker(
     tor_max: float,
     smoothing_window: int,
     command_rate_hz: float,
+    new_data_event: mp.Event = None,
 ):
     """Subprocess entry point: opens EtherCAT on *iface* and sends commands.
 
@@ -478,30 +474,26 @@ def _hand_worker(
     ready_flag.value = 1
 
     smoother = JointSmoother(NUM_XHAND_JOINTS, smoothing_window)
-    min_interval = 1.0 / command_rate_hz
-    last_send = 0.0
     last_seq = -1
     sent = 0
 
     while stop_flag.value == 0:
+        # Wait for new data signal instead of polling
+        if new_data_event is not None:
+            new_data_event.wait(timeout=0.02)
+            new_data_event.clear()
         cur_seq = shm_seq.value
         if cur_seq == last_seq:
-            time.sleep(0.001)
+            if new_data_event is None:
+                time.sleep(0.001)
             continue
         last_seq = cur_seq
 
         # Read positions from shared memory
-        with shm_positions.get_lock():
-            positions = np.array(shm_positions[:], dtype=np.float64)
+        positions = np.array(shm_positions[:], dtype=np.float64)
 
         smoothed = smoother.smooth(positions)
         clamped = clamp_to_limits(smoothed)
-
-        # Rate limit
-        now = time.monotonic()
-        wait = min_interval - (now - last_send)
-        if wait > 0:
-            time.sleep(wait)
 
         cmd = HandCommand_t()
         for i in range(NUM_XHAND_JOINTS):
@@ -512,11 +504,14 @@ def _hand_worker(
             cmd.finger_command[i].mode = 3
 
         try:
+            t_hw0 = time.monotonic()
             device.send_command(device_id, cmd)
+            t_hw1 = time.monotonic()
             sent += 1
-            last_send = time.monotonic()
-            if sent % 200 == 0:
-                log.info("sent=%d pos=%s", sent, np.array2string(clamped, precision=3))
+            hw_ms = (t_hw1 - t_hw0) * 1000
+            if sent <= 5 or sent % 200 == 0 or hw_ms > 50:
+                log.info("sent=%d hw=%.1fms pos=%s", sent, hw_ms,
+                         np.array2string(clamped, precision=3))
         except Exception as e:
             log.error("send_command error: %s", e)
 
@@ -558,6 +553,7 @@ class XHandProcessBridge:
         self._stop_flag = mp.Value(ctypes.c_int, 0)
         self._ready_flag = mp.Value(ctypes.c_int, 0)
         self._error_msg = mp.Array(ctypes.c_char, 256)
+        self._new_data_event = mp.Event()
         self._process: Optional[mp.Process] = None
         self._connected = False
 
@@ -585,6 +581,7 @@ class XHandProcessBridge:
                 self._config.tor_max,
                 self._config.smoothing_window,
                 self._config.command_rate_hz,
+                self._new_data_event,
             ),
             daemon=True,
             name=f"xhand-{self._side}",
@@ -617,9 +614,9 @@ class XHandProcessBridge:
         else:
             raw = np.asarray(qpos[:NUM_XHAND_JOINTS], dtype=np.float64)
 
-        with self._shm_positions.get_lock():
-            self._shm_positions[:] = raw.tolist()
+        self._shm_positions[:] = raw.tolist()
         self._shm_seq.value += 1
+        self._new_data_event.set()
 
     async def close(self, shutdown_hardware: bool = True):
         if self._process and self._process.is_alive():
