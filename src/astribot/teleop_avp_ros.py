@@ -273,7 +273,12 @@ def main():
     astribot = Astribot(freq=float(args.freq))
     print(f"SDK ready (alive={astribot.is_alive})")
 
-    # Get actual current poses from SDK (world frame) — used as home for all trackers
+    # Move robot to home pose before starting teleoperation
+    print("Moving to home pose...")
+    result = astribot.move_to_home()
+    print(f"Move to home result: {result}")
+
+    # Get home poses from SDK (world frame) — used as reference for all tracking deltas
     arm_names = [astribot.arm_left_name, astribot.arm_right_name]
     init_poses = astribot.get_desired_cartesian_pose(names=arm_names, frame="world")
     LEFT_ARM_HOME  = init_poses[0]   # [x, y, z, qx, qy, qz, qw]
