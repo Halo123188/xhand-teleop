@@ -22,17 +22,36 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import rclpy.node
+import astribot_ros_middleware
+
+# Raise aiortc's hardcoded H264 bitrate ceiling (3 Mbps default is too low
+# for sharp 720p). Must be patched before vuer/aiortc instantiates the encoder.
+import aiortc.codecs.h264 as _h264
+_h264.MIN_BITRATE = 3_000_000
+_h264.DEFAULT_BITRATE = 3_000_000
+_h264.MAX_BITRATE = 3_000_000
 
 from vuer import Vuer, VuerSession
 from vuer.schemas import DefaultScene, Hands, Head, WebRTCVideoPlane
+
+# Patch rclpy.node.Node.create_publisher to accept 'queue_size' (ROS1 compat).
+# The compiled Cython module robotics_library_base.so passes queue_size as a
+# keyword argument, but rclpy's Node only accepts qos_profile.
+_orig_create_publisher = rclpy.node.Node.create_publisher
+
+def _patched_create_publisher(self, msg_type, topic, qos_profile=10, **kwargs):
+    if "queue_size" in kwargs:
+        qos_profile = kwargs.pop("queue_size")
+    return _orig_create_publisher(self, msg_type, topic, qos_profile, **kwargs)
+
+rclpy.node.Node.create_publisher = _patched_create_publisher
 
 _SDK_ROOT = Path("/home/astribot/fortyfive/astribot_sdk_aarch64")
 if str(_SDK_ROOT) not in sys.path:
     sys.path.insert(0, str(_SDK_ROOT))
 from astribot_sdk.core.astribot_api.astribot_client import Astribot
 
-# Axis remap: VR (Y-up, -Z forward) -> robot frame
-_P = np.array([[1, 0, 0], [0, 0, -1], [0, 1, 0]], dtype=float)
 CAMERAS = ["head_rgbd", "torso_rgbd"]
 
 
@@ -51,91 +70,92 @@ def quat_multiply(q1, q2):
     ])
 
 
-def rot_to_quat(R):
-    """3x3 rotation matrix -> quaternion [x, y, z, w]."""
-    R = np.asarray(R, dtype=float)
-    tr = R[0, 0] + R[1, 1] + R[2, 2]
-    if tr > 0:
-        s = 0.5 / np.sqrt(tr + 1.0)
-        return np.array([(R[2,1]-R[1,2])*s, (R[0,2]-R[2,0])*s, (R[1,0]-R[0,1])*s, 0.25/s])
-    elif R[0, 0] > R[1, 1] and R[0, 0] > R[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + R[0,0] - R[1,1] - R[2,2])
-        return np.array([0.25*s, (R[0,1]+R[1,0])/s, (R[0,2]+R[2,0])/s, (R[2,1]-R[1,2])/s])
-    elif R[1, 1] > R[2, 2]:
-        s = 2.0 * np.sqrt(1.0 + R[1,1] - R[0,0] - R[2,2])
-        return np.array([(R[0,1]+R[1,0])/s, 0.25*s, (R[1,2]+R[2,1])/s, (R[0,2]-R[2,0])/s])
-    else:
-        s = 2.0 * np.sqrt(1.0 + R[2,2] - R[0,0] - R[1,1])
-        return np.array([(R[0,2]+R[2,0])/s, (R[1,2]+R[2,1])/s, 0.25*s, (R[1,0]-R[0,1])/s])
-
-
-def delta_quat(R_now, R_base, base_robot_quat):
-    """Compute robot quat from VR rotation delta applied to robot base quat."""
-    R_delta = _P @ (R_now @ R_base.T) @ _P.T
-    return quat_multiply(rot_to_quat(R_delta), base_robot_quat)
-
-
 # ---------------------------------------------------------------------------
-# Wrist tracking (dict-based, no class)
+# Head tracking — pitch/yaw decomposition (2-DOF, no roll)
 # ---------------------------------------------------------------------------
 
-def make_wrist_tracker(max_vel=0.005, dead_zone=0.002, alpha=0.3, radius=0.8):
-    return dict(max_vel=max_vel, dead_zone=dead_zone, alpha=alpha, radius=radius,
-                base_pos=None, base_rot=None, robot_pos=None, robot_quat=None,
-                home=None, smooth=None)
+def head_quat_from_yz(pitch, yaw):
+    """Build quaternion [x,y,z,w] from head pitch (nod) and yaw (turn).
+
+    Rotation order: Ry(yaw) * Rz(pitch), matching the robot's 2-DOF head.
+    """
+    cy, sy = np.cos(yaw / 2), np.sin(yaw / 2)
+    cp, sp = np.cos(pitch / 2), np.sin(pitch / 2)
+    return np.array([
+        -sy * sp,           # x
+        sy * cp,            # y
+        cy * sp,            # z
+        cy * cp,            # w
+    ])
 
 
-def update_wrist(t, wrist_mat, robot_pose_7):
-    """Returns (pos_list, quat_list) or None on first frame / missing data."""
-    if wrist_mat is None or robot_pose_7 is None:
-        return None
-    pos = wrist_mat[:3, 3]
-    rp, rq = np.array(robot_pose_7[:3]), np.array(robot_pose_7[3:7])
+def make_head_tracker(alpha=0.9, pitch_limit=0.8, yaw_limit=0.8,
+                      warmup_frames=30):
+    """Head tracker using pitch/yaw angles (2-DOF).
 
-    if t["base_pos"] is None:
-        t["base_pos"], t["base_rot"] = pos.copy(), wrist_mat[:3, :3].copy()
-        t["robot_pos"], t["robot_quat"] = rp.copy(), rq.copy()
-        t["home"], t["smooth"] = rp.copy(), rp.copy()
-        print(f"[Wrist] Calibrated. home={rp.tolist()}")
-        return None
-
-    # Position delta remapped to robot frame
-    d = pos - t["base_pos"]
-    target = t["robot_pos"] + np.array([d[0], -d[2], d[1]])
-
-    if np.linalg.norm(target - t["smooth"]) < t["dead_zone"]:
-        pos_out = t["smooth"]
-    else:
-        delta = target - t["smooth"]
-        dist = np.linalg.norm(delta)
-        if dist > t["max_vel"]:
-            target = t["smooth"] + delta * (t["max_vel"] / dist)
-        off = target - t["home"]
-        r = np.linalg.norm(off)
-        if r > t["radius"]:
-            target = t["home"] + off * (t["radius"] / r)
-        t["smooth"] = t["alpha"] * target + (1 - t["alpha"]) * t["smooth"]
-        pos_out = t["smooth"]
-
-    q_out = delta_quat(wrist_mat[:3, :3], t["base_rot"], t["robot_quat"])
-    return list(pos_out), [float(v) for v in q_out]
+    Args:
+        alpha: EMA smoothing factor per frame (0=frozen, 1=instant)
+        pitch_limit: max pitch deviation from baseline (radians, ~46 deg)
+        yaw_limit: max yaw deviation from baseline (radians, ~46 deg)
+        warmup_frames: number of initial frames to skip before capturing baseline
+    """
+    return dict(
+        init_pitch=None,
+        init_yaw=None,
+        smooth_pitch=0.0,
+        smooth_yaw=0.0,
+        current_quat=None,
+        ready=False,
+        alpha=alpha,
+        pitch_limit=pitch_limit,
+        yaw_limit=yaw_limit,
+        last_update=None,
+        warmup_frames=warmup_frames,
+        frame_count=0,
+    )
 
 
-# ---------------------------------------------------------------------------
-# Head tracking (dict-based, no class)
-# ---------------------------------------------------------------------------
+def _extract_pitch_yaw(mat):
+    """Extract pitch and yaw from a VR 4x4 head matrix.
 
-def make_head_tracker(robot_head_quat):
-    return dict(init_rot=None, robot_quat=np.array(robot_head_quat),
-                current_quat=None, ready=False)
+    VR frame: Y-up, -Z forward.
+    Pitch: elevation angle of the gaze direction (positive = looking up).
+    Yaw: heading of the gaze direction on the XZ ground plane (turning).
+    """
+    forward = -mat[:3, 2]
+    pitch = np.arcsin(np.clip(forward[1], -1, 1))
+    yaw = np.arctan2(forward[0], -forward[2])
+    return pitch, yaw
 
 
 def update_head(t, mat):
-    if t["init_rot"] is None:
-        t["init_rot"] = mat[:3, :3].copy()
-        print(f"[Head] Baseline captured")
-    t["current_quat"] = delta_quat(mat[:3, :3], t["init_rot"], t["robot_quat"])
+    pitch, yaw = _extract_pitch_yaw(mat)
+    t["frame_count"] += 1
+
+    # Skip initial frames before tracking data stabilises
+    if t["frame_count"] <= t["warmup_frames"]:
+        return
+
+    if t["init_pitch"] is None:
+        t["init_pitch"] = pitch
+        t["init_yaw"] = yaw
+        print(f"[Head] Baseline: pitch={pitch:.3f} yaw={yaw:.3f}")
+        return
+
+    # Delta from baseline, clamped to safety limits
+    dp = np.clip(pitch - t["init_pitch"], -t["pitch_limit"], t["pitch_limit"])
+    dy = np.clip(yaw - t["init_yaw"], -t["yaw_limit"], t["yaw_limit"])
+
+    # EMA smoothing
+    t["smooth_pitch"] = t["alpha"] * dp + (1 - t["alpha"]) * t["smooth_pitch"]
+    t["smooth_yaw"] = t["alpha"] * dy + (1 - t["alpha"]) * t["smooth_yaw"]
+
+    # Robot head convention: Ry = pitch (nod), Rz = yaw (turn), both inverted
+    # relative to VR. VR yaw drives the function's "pitch" slot and VR pitch
+    # drives the function's "yaw" slot, both with sign flips.
+    t["current_quat"] = head_quat_from_yz(-t["smooth_yaw"], -t["smooth_pitch"])
     t["ready"] = True
+    t["last_update"] = time.monotonic()
 
 
 # ---------------------------------------------------------------------------
@@ -161,12 +181,12 @@ def main():
     p = argparse.ArgumentParser(description="Astribot teleop + WebRTC camera")
     p.add_argument("--server_url", required=True, help="ngrok HTTPS URL")
     p.add_argument("--port", type=int, default=8012)
-    p.add_argument("--freq", type=int, default=250, help="Control loop Hz")
-    p.add_argument("--max_velocity", type=float, default=0.005)
-    p.add_argument("--workspace_radius", type=float, default=0.8)
+    p.add_argument("--freq", type=int, default=100, help="Control loop Hz")
     p.add_argument("--camera_fps", type=int, default=30)
-    p.add_argument("--camera_width", type=int, default=640, help="Tile width")
-    p.add_argument("--camera_height", type=int, default=480, help="Tile height")
+    p.add_argument("--camera_width", type=int, default=1280, help="Tile width")
+    p.add_argument("--camera_height", type=int, default=720, help="Tile height")
+    p.add_argument("--camera_bitrate", type=int, default=3_000_000,
+                   help="WebRTC max bitrate in bps")
     args = p.parse_args()
 
     # ---- SDK init ----
@@ -174,12 +194,9 @@ def main():
     print(f"SDK ready (alive={astribot.is_alive})")
     astribot.move_to_home()
 
-    arm_names = [astribot.arm_left_name, astribot.arm_right_name]
-    arm_homes = astribot.get_desired_cartesian_pose(names=arm_names, frame="world")
-    LEFT_HOME, RIGHT_HOME = arm_homes[0], arm_homes[1]
     HEAD_HOME = astribot.get_desired_cartesian_pose(
         names=[astribot.head_name], frame="world")[0]
-    print(f"[SDK] L={LEFT_HOME}  R={RIGHT_HOME}  H={HEAD_HOME}")
+    print(f"[SDK] HEAD_HOME={HEAD_HOME}")
 
     # ---- Cameras ----
     for c in CAMERAS:
@@ -205,6 +222,7 @@ def main():
     tw, th = args.camera_width, args.camera_height
     stream = app.create_webrtc_stream(
         "robot-camera", codec="H264",
+        max_bitrate=args.camera_bitrate,
         max_framerate=args.camera_fps, resolution=(tw, th * 2))
 
     def camera_sender():
@@ -212,14 +230,18 @@ def main():
         print("[CAM] WebRTC ready")
         interval = 1.0 / max(args.camera_fps, 1)
         last, n = None, 0
+
+        def _fit(f):
+            if f is None:
+                return np.zeros((th, tw, 3), dtype=np.uint8)
+            if f.shape[0] == th and f.shape[1] == tw:
+                return f
+            return cv2.resize(f, (tw, th), interpolation=cv2.INTER_AREA)
+
         while True:
             hf, tf = latest_frames["head_rgbd"], latest_frames["torso_rgbd"]
             if hf is not None or tf is not None:
-                top = cv2.resize(hf, (tw, th), interpolation=cv2.INTER_NEAREST) \
-                    if hf is not None else np.zeros((th, tw, 3), dtype=np.uint8)
-                bot = cv2.resize(tf, (tw, th), interpolation=cv2.INTER_NEAREST) \
-                    if tf is not None else np.zeros((th, tw, 3), dtype=np.uint8)
-                last = np.vstack((top, bot))
+                last = np.vstack((_fit(hf), _fit(tf)))
             if last is not None:
                 stream.push_frame(last)
                 n += 1
@@ -230,28 +252,16 @@ def main():
     threading.Thread(target=camera_sender, daemon=True, name="CamSender").start()
 
     # ---- Trackers ----
-    rh = make_wrist_tracker(max_vel=args.max_velocity, radius=args.workspace_radius)
-    lh = make_wrist_tracker(max_vel=args.max_velocity, radius=args.workspace_radius)
-    ht = make_head_tracker(HEAD_HOME[3:7])
+    ht = make_head_tracker()
+    head_home_pos = list(HEAD_HOME[:3])
+    head_home_quat = np.array(HEAD_HOME[3:7])
+
+    # Stop sending head commands if AVP data is older than this
+    HEAD_STALE_TIMEOUT = 0.5  # seconds
 
     # ---- Shared state ----
     lock = threading.Lock()
-    tracking = {"r": None, "l": None, "head": None, "rc": 0, "lc": 0}
-
-    @app.add_handler("HAND_MOVE")
-    async def on_hand(event, session):
-        d = event.value
-        with lock:
-            if d.get("right"):
-                tracking["r"] = d["right"]
-                tracking["rc"] += 1
-                if tracking["rc"] == 1:
-                    print("[RECV] First RIGHT hand data")
-            if d.get("left"):
-                tracking["l"] = d["left"]
-                tracking["lc"] += 1
-                if tracking["lc"] == 1:
-                    print("[RECV] First LEFT hand data")
+    tracking = {"head": None}
 
     @app.add_handler("HEAD_MOVE")
     async def on_head_evt(event, session):
@@ -260,42 +270,44 @@ def main():
             with lock:
                 tracking["head"] = m
 
-    # ---- Control loop ----
+    # ---- Control loop (head only) ----
     def control_loop():
-        dt = 1.0 / args.freq
+        rate = astribot_ros_middleware.Rate(args.freq)
         n, cmd_n = 0, 0
         while True:
             with lock:
-                rp, lp, hm = tracking["r"], tracking["l"], tracking["head"]
-
-            rm = np.array(rp[:16]).reshape(4, 4).T if rp and len(rp) >= 16 else None
-            lm = np.array(lp[:16]).reshape(4, 4).T if lp and len(lp) >= 16 else None
+                hm = tracking["head"]
 
             if n % 500 == 0:
-                print(f"[DIAG @{n}] R={tracking['rc']} L={tracking['lc']} cmds={cmd_n}")
+                stale = ""
+                if ht["last_update"] is not None:
+                    age = time.monotonic() - ht["last_update"]
+                    stale = f" age={age:.2f}s"
+                print(f"[DIAG @{n}] head={'ok' if ht['ready'] else 'NONE'}"
+                      f" p={ht['smooth_pitch']:.3f} y={ht['smooth_yaw']:.3f}"
+                      f"{stale} cmds={cmd_n}")
             n += 1
 
-            rr = update_wrist(rh, rm, RIGHT_HOME)
-            lr = update_wrist(lh, lm, LEFT_HOME)
             if hm is not None:
                 update_head(ht, np.array(hm).reshape(4, 4).T)
 
-            names, poses = [], []
-            if rr:
-                names.append(astribot.arm_right_name)
-                poses.append(rr[0] + rr[1])
-            if lr:
-                names.append(astribot.arm_left_name)
-                poses.append(lr[0] + lr[1])
-            if ht["ready"] and ht["current_quat"] is not None:
-                names.append(astribot.head_name)
-                poses.append(list(HEAD_HOME[:3]) + [float(v) for v in ht["current_quat"]])
+            # Skip if head data is stale (AVP disconnected / tracking lost)
+            if ht["last_update"] is not None and \
+               (time.monotonic() - ht["last_update"]) > HEAD_STALE_TIMEOUT:
+                rate.sleep()
+                continue
 
-            if names:
-                astribot.set_cartesian_pose(names, poses,
-                                            control_way="filter", add_default_torso=True)
-                cmd_n += 1
-            time.sleep(dt)
+            if ht["ready"] and ht["current_quat"] is not None:
+                final_quat = quat_multiply(ht["current_quat"], head_home_quat)
+                head_pose = head_home_pos + [float(v) for v in final_quat]
+            else:
+                head_pose = list(HEAD_HOME)
+
+            astribot.set_cartesian_pose(
+                [astribot.head_name], [head_pose],
+                control_way="direct", add_default_torso=True)
+            cmd_n += 1
+            rate.sleep()
 
     threading.Thread(target=control_loop, daemon=True, name="CtrlLoop").start()
 
@@ -304,7 +316,7 @@ def main():
     async def main_session(session: VuerSession):
         session.set @ DefaultScene(
             Hands(stream=True, fps=30, key="hands"),
-            Head(stream=True, fps=30, key="head"),
+            Head(stream=True, fps=60, key="head"),
             WebRTCVideoPlane(
                 src="/webrtc/offer/robot-camera",
                 distanceToCamera=3, height=1.5,
