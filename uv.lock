@@ -1312,14 +1312,26 @@ dependencies = [
     { name = "vuer" },
 ]
 
+[package.optional-dependencies]
+ros = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.4.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "pillow" },
+    { name = "vuer" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "mujoco", specifier = ">=3.5" },
     { name = "numpy" },
+    { name = "numpy", marker = "extra == 'ros'" },
     { name = "params-proto", specifier = ">=3.0" },
+    { name = "pillow", marker = "extra == 'ros'" },
     { name = "scipy" },
     { name = "vuer", specifier = ">=0.1.5" },
+    { name = "vuer", marker = "extra == 'ros'", specifier = ">=0.1.5" },
 ]
+provides-extras = ["ros"]
 
 [[package]]
 name = "yarl"
