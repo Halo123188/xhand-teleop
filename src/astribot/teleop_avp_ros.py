@@ -62,6 +62,17 @@ from astribot_sdk.core.astribot_api.astribot_client import Astribot
 
 CAMERAS = ["head_rgbd", "torso_rgbd"]
 
+# Camera stream config (stacked head+torso tiles sent via WebRTC H264).
+CAMERA_FPS = 30
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_BITRATE = 3_000_000
+
+# Fail-safe timeouts: if AVP stops streaming, stop updating the robot so
+# it holds its last commanded pose instead of acting on stale targets.
+HEAD_STALE_TIMEOUT = 0.5   # seconds
+WRIST_STALE_TIMEOUT = 0.5  # seconds
+
 
 # ---------------------------------------------------------------------------
 # Math helpers
@@ -233,55 +244,42 @@ def update_head(t, mat):
 # Wrist tracking -- 6-DOF pose delta from VR wrist matrix
 # ---------------------------------------------------------------------------
 
-def make_wrist_tracker(pos_alpha=0.5, pos_limit=0.5,
-                        max_lin_vel=0.5, pos_deadband=0.002,
-                        rot_alpha=0.15, max_ang_vel=1.5,
-                        rot_deadband=0.02, warmup_frames=30):
-    """Per-hand tracker for wrist pose (position + orientation delta).
+# Wrist tracking safety envelope. These protect the robot from AVP
+# hiccups and VR tracking noise; the real command smoothing is done by
+# the SDK filter (see --filter_scale). Values are the tested working set.
+WRIST_POS_LIMIT = 0.5       # max pos deviation from baseline (m)
+WRIST_MAX_LIN_VEL = 0.3     # max Cartesian speed (m/s)
+WRIST_POS_DEADBAND = 0.002  # hold-still dead-band for position (m)
+WRIST_MAX_ANG_VEL = 3.0     # max angular speed (rad/s)
+WRIST_ROT_DEADBAND = 0.02   # hold-still dead-band for rotation (rad)
+WRIST_WARMUP_FRAMES = 30
 
-    Args:
-        pos_alpha: EMA smoothing factor for position (0=frozen, 1=instant)
-        pos_limit: max per-axis position deviation from baseline (meters)
-        max_lin_vel: max Cartesian speed of the commanded target (m/s);
-            caps the per-step jump to avoid IK joint-velocity blow-ups
-        pos_deadband: VR wrist position change below this (meters) is
-            treated as noise and skipped -- kills hold-still jitter
-        rot_alpha: EMA smoothing factor for orientation (via slerp)
-        max_ang_vel: max angular speed of the commanded orientation
-            (rad/s); caps per-step quaternion jumps to keep wrist joint
-            velocities under the SDK limit
-        rot_deadband: angle (rad) below which wrist rotation changes are
-            treated as noise and skipped
-        warmup_frames: initial frames to skip before capturing baseline
-    """
+
+def make_wrist_tracker():
+    """Per-hand 6-DOF wrist tracker state."""
     ident_q = np.array([0.0, 0.0, 0.0, 1.0])
     return dict(
         init_vr_pos=None,
         init_vr_R=None,
-        smooth_pos=np.zeros(3),
-        smooth_quat=ident_q.copy(),
         current_pos=None,
         current_quat=None,
         last_out_pos=None,
         last_out_quat=ident_q.copy(),
         ready=False,
         last_update=None,
-        pos_alpha=pos_alpha,
-        pos_limit=pos_limit,
-        max_lin_vel=max_lin_vel,
-        pos_deadband=pos_deadband,
-        rot_alpha=rot_alpha,
-        max_ang_vel=max_ang_vel,
-        rot_deadband=rot_deadband,
-        warmup_frames=warmup_frames,
         frame_count=0,
     )
 
 
 def update_wrist(t, mat):
-    """Update wrist tracker state from a 4x4 VR wrist matrix."""
+    """Update wrist tracker state from a 4x4 VR wrist matrix.
+
+    Pipeline per cycle: delta-from-baseline -> VR->robot frame map ->
+    absolute workspace clip -> per-step velocity clip -> output-side
+    dead-band. No upstream EMA; the SDK filter handles smoothing.
+    """
     t["frame_count"] += 1
-    if t["frame_count"] <= t["warmup_frames"]:
+    if t["frame_count"] <= WRIST_WARMUP_FRAMES:
         return
 
     vr_pos = mat[:3, 3]
@@ -294,54 +292,34 @@ def update_wrist(t, mat):
         return
 
     now = time.monotonic()
+    dpos_robot = VR_TO_ROBOT @ (vr_pos - t["init_vr_pos"])
+    dR_robot = VR_TO_ROBOT @ (vr_R @ t["init_vr_R"].T) @ VR_TO_ROBOT.T
 
-    # Delta from baseline, mapped into robot frame. EMA + velocity clip run
-    # every control cycle (100Hz) even when the AVP data hasn't changed, so
-    # the output interpolates smoothly between the ~30Hz AVP samples.
-    dpos_vr = vr_pos - t["init_vr_pos"]
-    dR_vr = vr_R @ t["init_vr_R"].T
-    dpos_robot = VR_TO_ROBOT @ dpos_vr
-    dR_robot = VR_TO_ROBOT @ dR_vr @ VR_TO_ROBOT.T
-
-    # ---- Position: absolute clip -> EMA -> per-step velocity clip ----
-    dpos_robot = np.clip(dpos_robot, -t["pos_limit"], t["pos_limit"])
-    t["smooth_pos"] = (t["pos_alpha"] * dpos_robot
-                       + (1 - t["pos_alpha"]) * t["smooth_pos"])
-
-    target_pos = t["smooth_pos"].copy()
+    # ---- Position: absolute clip -> velocity clip -> dead-band ----
+    target_pos = np.clip(dpos_robot, -WRIST_POS_LIMIT, WRIST_POS_LIMIT)
     if t["last_out_pos"] is None:
         t["last_out_pos"] = target_pos.copy()
     if t["last_update"] is not None:
         dt = max(now - t["last_update"], 1e-3)
-        step_limit = t["max_lin_vel"] * dt
         step = target_pos - t["last_out_pos"]
         norm = np.linalg.norm(step)
+        step_limit = WRIST_MAX_LIN_VEL * dt
         if norm > step_limit:
             target_pos = t["last_out_pos"] + step * (step_limit / norm)
-
-    # Output-side dead-band: if the commanded step is tiny, hold the last
-    # commanded pos so residual noise doesn't make the end-effector shimmer
-    # when the user is trying to stay still.
-    if np.linalg.norm(target_pos - t["last_out_pos"]) < t["pos_deadband"]:
+    if np.linalg.norm(target_pos - t["last_out_pos"]) < WRIST_POS_DEADBAND:
         target_pos = t["last_out_pos"]
     t["last_out_pos"] = target_pos
 
-    # ---- Rotation: slerp EMA -> per-step angular velocity clip ----
-    target_q_raw = mat_to_quat(dR_robot)
-    t["smooth_quat"] = quat_slerp(t["smooth_quat"], target_q_raw,
-                                  t["rot_alpha"])
-
-    target_quat = t["smooth_quat"].copy()
+    # ---- Rotation: velocity clip -> dead-band ----
+    target_quat = mat_to_quat(dR_robot)
     if t["last_update"] is not None:
         dt = max(now - t["last_update"], 1e-3)
-        ang_limit = t["max_ang_vel"] * dt
         ang_step = quat_angle(t["last_out_quat"], target_quat)
+        ang_limit = WRIST_MAX_ANG_VEL * dt
         if ang_step > ang_limit:
-            frac = ang_limit / ang_step
-            target_quat = quat_slerp(t["last_out_quat"], target_quat, frac)
-
-    # Output-side rotation dead-band.
-    if quat_angle(target_quat, t["last_out_quat"]) < t["rot_deadband"]:
+            target_quat = quat_slerp(t["last_out_quat"], target_quat,
+                                     ang_limit / ang_step)
+    if quat_angle(target_quat, t["last_out_quat"]) < WRIST_ROT_DEADBAND:
         target_quat = t["last_out_quat"]
     t["last_out_quat"] = target_quat
 
@@ -394,39 +372,9 @@ def main():
     p.add_argument("--server_url", required=True, help="ngrok HTTPS URL")
     p.add_argument("--port", type=int, default=8012)
     p.add_argument("--freq", type=int, default=100, help="Control loop Hz")
-    p.add_argument("--camera_fps", type=int, default=30)
-    p.add_argument("--camera_width", type=int, default=1280, help="Tile width")
-    p.add_argument("--camera_height", type=int, default=720, help="Tile height")
-    p.add_argument("--camera_bitrate", type=int, default=3_000_000,
-                   help="WebRTC max bitrate in bps")
-    p.add_argument("--pos_only", action="store_true",
-                   help="Debug: track wrist position only, freeze orientation "
-                        "at arm home (useful for verifying axis mapping)")
-    p.add_argument("--wrist_pos_alpha", type=float, default=1.0,
-                   help="EMA smoothing for wrist position (0=frozen, "
-                        "1=instant). 1.0 disables EMA -- rely on SDK "
-                        "control_way='filter' for smoothing instead.")
-    p.add_argument("--wrist_pos_limit", type=float, default=0.5,
-                   help="Max wrist position deviation from baseline (meters)")
-    p.add_argument("--wrist_max_vel", type=float, default=0.3,
-                   help="Max Cartesian speed of wrist target (m/s). Caps "
-                        "per-step jumps to prevent joint velocity blow-ups.")
-    p.add_argument("--wrist_deadband", type=float, default=0.002,
-                   help="Ignore VR wrist position changes below this "
-                        "(meters) -- kills hold-still jitter.")
-    p.add_argument("--wrist_rot_alpha", type=float, default=1.0,
-                   help="EMA (slerp) smoothing for wrist orientation. "
-                        "1.0 disables EMA -- rely on SDK filter instead.")
-    p.add_argument("--wrist_max_ang_vel", type=float, default=3.0,
-                   help="Max angular speed of wrist target (rad/s). "
-                        "Lower = safer for wrist joint velocity limits.")
-    p.add_argument("--wrist_rot_deadband", type=float, default=0.02,
-                   help="Ignore VR wrist rotation changes below this "
-                        "(rad) -- kills hold-still orientation jitter.")
     p.add_argument("--filter_scale", type=float, default=0.7,
-                   help="SDK filter scale (when control_way='filter'). "
-                        "Lower = smoother but laggier. Example doc uses "
-                        "0.1 (slow); 0.5-1.0 feels more responsive.")
+                   help="SDK filter scale. Lower = smoother but laggier "
+                        "(example doc uses 0.1); 0.5-1.0 is responsive.")
     args = p.parse_args()
 
     # ---- SDK init ----
@@ -445,8 +393,6 @@ def main():
     LEFT_HOME, RIGHT_HOME = ARM_HOME[0], ARM_HOME[1]
     print(f"[SDK] LEFT_HOME ={LEFT_HOME}")
     print(f"[SDK] RIGHT_HOME={RIGHT_HOME}")
-    if args.pos_only:
-        print("[DEBUG] --pos_only: wrist orientation frozen at arm home")
 
     # ---- Cameras ----
     for c in CAMERAS:
@@ -469,16 +415,16 @@ def main():
 
     # ---- Vuer + WebRTC ----
     app = Vuer(host="0.0.0.0", port=args.port)
-    tw, th = args.camera_width, args.camera_height
+    tw, th = CAMERA_WIDTH, CAMERA_HEIGHT
     stream = app.create_webrtc_stream(
         "robot-camera", codec="H264",
-        max_bitrate=args.camera_bitrate,
-        max_framerate=args.camera_fps, resolution=(tw, th * 2))
+        max_bitrate=CAMERA_BITRATE,
+        max_framerate=CAMERA_FPS, resolution=(tw, th * 2))
 
     def camera_sender():
         stream.wait_ready_sync(timeout=30)
         print("[CAM] WebRTC ready")
-        interval = 1.0 / max(args.camera_fps, 1)
+        interval = 1.0 / CAMERA_FPS
         last, n = None, 0
 
         def _fit(f):
@@ -506,25 +452,12 @@ def main():
     head_home_pos = list(HEAD_HOME[:3])
     head_home_quat = np.array(HEAD_HOME[3:7])
 
-    _wrist_kw = dict(
-        pos_alpha=args.wrist_pos_alpha,
-        pos_limit=args.wrist_pos_limit,
-        max_lin_vel=args.wrist_max_vel,
-        pos_deadband=args.wrist_deadband,
-        rot_alpha=args.wrist_rot_alpha,
-        max_ang_vel=args.wrist_max_ang_vel,
-        rot_deadband=args.wrist_rot_deadband,
-    )
-    lt = make_wrist_tracker(**_wrist_kw)
-    rt = make_wrist_tracker(**_wrist_kw)
+    lt = make_wrist_tracker()
+    rt = make_wrist_tracker()
     left_home_pos = np.array(LEFT_HOME[:3])
     left_home_quat = np.array(LEFT_HOME[3:7])
     right_home_pos = np.array(RIGHT_HOME[:3])
     right_home_quat = np.array(RIGHT_HOME[3:7])
-
-    # Stop sending commands if AVP data is older than this
-    HEAD_STALE_TIMEOUT = 0.5   # seconds
-    WRIST_STALE_TIMEOUT = 0.5  # seconds
 
     # ---- Shared state ----
     lock = threading.Lock()
@@ -555,10 +488,7 @@ def main():
            (time.monotonic() - wt["last_update"]) > WRIST_STALE_TIMEOUT:
             return list(home_full)
         pos = home_pos + wt["current_pos"]
-        if args.pos_only:
-            quat = home_quat
-        else:
-            quat = quat_multiply(wt["current_quat"], home_quat)
+        quat = quat_multiply(wt["current_quat"], home_quat)
         return [float(v) for v in pos] + [float(v) for v in quat]
 
     # ---- Control loop (head + both arms) ----
